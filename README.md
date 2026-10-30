@@ -34,6 +34,7 @@ cargo check --locked --lib --no-default-features --features serde --target thumb
 | `secp256k1` | Enable evm2's native secp256k1 backend. | Yes |
 | `blst` | Enable evm2's BLST backend. | Yes |
 | `portable` | Enable portable builds of the selected KZG and BLST backends. | Yes |
+| `memory_limit` | Apply configured memory limits and the 8 MiB cap for MonadNine and later. | Yes |
 
 Disable default features for `no_std` builds. The `serde` feature supports
 `no_std` and enables the local Serde dependency without enabling evm2's

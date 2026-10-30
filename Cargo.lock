@@ -154,7 +154,9 @@ version = "0.1.0"
 dependencies = [
  "evm2",
  "monad-revm",
+ "revm",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

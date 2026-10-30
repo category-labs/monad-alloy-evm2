@@ -19,16 +19,20 @@ evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d
 serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-monad-revm = { version = "=0.8.0", default-features = false, features = ["std", "memory_limit"] }
+monad-revm = { version = "=0.8.0", default-features = false, features = ["std"] }
+revm = { version = "43.0.0", default-features = false, features = ["std"] }
+serde_json = "1"
 
 [features]
-default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"]
 std = ["evm2/std", "serde?/std"]
 serde = ["dep:serde"]
 c-kzg = ["evm2/c-kzg"]
 secp256k1 = ["evm2/secp256k1"]
 portable = ["evm2/portable"]
 blst = ["evm2/blst"]
+# Keep the test reference's memory-limit feature in sync.
+memory_limit = ["monad-revm/memory_limit"]
 
 [lints.rust]
 missing_debug_implementations = "warn"
