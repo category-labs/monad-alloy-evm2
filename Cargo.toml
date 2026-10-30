@@ -1,0 +1,47 @@
+[package]
+name = "alloy-monad-evm2"
+description = "Monad execution on evm2"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+authors = ["Haythem Sellami - Category Labs <hsellami@category.xyz>"]
+license = "MIT"
+repository = "https://github.com/category-labs/monad-alloy-evm2"
+readme = "README.md"
+keywords = ["monad", "evm", "evm2", "ethereum"]
+categories = ["cryptography::cryptocurrencies"]
+publish = false
+
+[dependencies]
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d22acb0404ed93f7c4a", default-features = false }
+
+# serde
+serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
+
+[dev-dependencies]
+monad-revm = { version = "=0.8.0", default-features = false, features = ["std", "memory_limit"] }
+
+[features]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
+std = ["evm2/std", "serde?/std"]
+serde = ["dep:serde"]
+c-kzg = ["evm2/c-kzg"]
+secp256k1 = ["evm2/secp256k1"]
+portable = ["evm2/portable"]
+blst = ["evm2/blst"]
+
+[lints.rust]
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "warn"
+unused_must_use = "deny"
+
+[lints.rustdoc]
+all = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
