@@ -1,10 +1,13 @@
 //! Configuration compatibility with the published monad-revm 0.8.0 release.
 
+mod common;
+
 use alloy_monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_MAX_CODE_SIZE, MONAD_MAX_INITCODE_SIZE, MONAD_MEMORY_LIMIT,
     MONAD_TESTNET_CHAIN_ID, MONAD_TX_GAS_LIMIT_CAP, MonadHardfork, MonadLimits,
     UnknownMonadHardfork, monad_gas_params, monad_memory_limit, monad_version,
 };
+use common::FORKS;
 use evm2::{
     BaseEvmTypes, EvmFeatures, OpcodeConfig, SpecId, Version, interpreter::op, version::GasId,
 };
@@ -13,13 +16,6 @@ use revm::{
     context::Cfg, context_interface::cfg::GasId as ReferenceGasId,
     primitives::hardfork::SpecId as ReferenceSpecId,
 };
-
-const FORKS: [(MonadHardfork, ReferenceHardfork); 4] = [
-    (MonadHardfork::MonadEight, ReferenceHardfork::MonadEight),
-    (MonadHardfork::MonadNine, ReferenceHardfork::MonadNine),
-    (MonadHardfork::MonadTen, ReferenceHardfork::MonadTen),
-    (MonadHardfork::MonadNext, ReferenceHardfork::MonadNext),
-];
 
 #[test]
 fn identifiers_names_and_ordering_match_release() {

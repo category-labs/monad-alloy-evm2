@@ -152,6 +152,8 @@ dependencies = [
 name = "alloy-monad-evm2"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
  "evm2",
  "monad-revm",
  "revm",
