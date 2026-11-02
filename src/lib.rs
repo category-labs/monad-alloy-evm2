@@ -22,3 +22,6 @@ pub mod spec;
 pub use spec::{
     MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadHardfork, UnknownMonadHardfork,
 };
+
+mod transaction;
+pub use transaction::{SYSTEM_ADDRESS, SystemSenderIsAuthority};

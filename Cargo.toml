@@ -13,14 +13,14 @@ categories = ["cryptography::cryptocurrencies"]
 publish = false
 
 [dependencies]
+alloy-consensus = { version = "2.5", default-features = false }
+alloy-primitives = { version = "1.7", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d22acb0404ed93f7c4a", default-features = false }
 
 # serde
 serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-alloy-consensus = { version = "2.5", default-features = false }
-alloy-primitives = { version = "1.7", default-features = false }
 monad-revm = { version = "=0.8.0", default-features = false, features = ["std"] }
 revm = { version = "43.0.0", default-features = false, features = ["std"] }
 serde_json = "1"

@@ -1,13 +1,7 @@
 //! Construction of Monad EVM instances.
 
-use crate::{MonadBlockEnv, MonadEvm, MonadEvmTypes, MonadHardfork, MonadLimits, MonadTxEnvelope};
-use evm2::{
-    ExecutionConfig, Precompiles,
-    ethereum::legacy,
-    evm::DynDatabase,
-    handler::DefaultTxHandlerHooks,
-    registry::{TxRegistry, handler},
-};
+use crate::{MonadBlockEnv, MonadEvm, MonadHardfork, MonadLimits, transaction::tx_registry};
+use evm2::{ExecutionConfig, Precompiles, evm::DynDatabase};
 
 /// Builds EVMs for one chain using the supplied hardfork, block, and database.
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +20,11 @@ impl MonadEvmFactory {
 
     /// Creates an EVM with the Monad gas table and limits for `spec`.
     ///
-    /// The factory accepts legacy transactions using evm2's Ethereum validation and
-    /// fee settlement. Instructions and precompiles are inherited from the base fork.
+    /// Legacy, access-list, dynamic-fee and set-code transactions pay for their full
+    /// gas limit at the effective price. The beneficiary receives the priority fee.
+    /// [`tx_gas_used()`](evm2::TxResultExt::tx_gas_used) reports the charged limit,
+    /// and [`total_gas_spent`](evm2::TxResultExt::total_gas_spent) records execution
+    /// consumption. Instructions and precompiles are inherited from the base fork.
     ///
     /// ```
     /// use alloy_monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
@@ -50,19 +47,11 @@ impl MonadEvmFactory {
     ) -> MonadEvm<'a> {
         let config =
             ExecutionConfig::for_spec_and_version(spec, self.limits.version(spec, self.chain_id));
-        let registry = TxRegistry::new().with_handler(
-            0,
-            MonadTxEnvelope::as_legacy,
-            handler(
-                legacy::prepare_with_hooks::<MonadEvmTypes, DefaultTxHandlerHooks>,
-                legacy::execute_prepared::<MonadEvmTypes, DefaultTxHandlerHooks>,
-            ),
-        );
         MonadEvm::new_with_execution_config(
             config,
             spec,
             block,
-            registry,
+            tx_registry(),
             db,
             Precompiles::base(spec.into_eth_spec()),
         )
