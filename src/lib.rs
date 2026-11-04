@@ -18,6 +18,9 @@ pub use evm::{MonadBlockEnv, MonadEvm, MonadEvmTypes, MonadTxEnvelope};
 mod factory;
 pub use factory::MonadEvmFactory;
 
+pub mod precompiles;
+pub use precompiles::monad_precompiles;
+
 pub mod spec;
 pub use spec::{
     MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadHardfork, UnknownMonadHardfork,

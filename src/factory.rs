@@ -1,7 +1,10 @@
 //! Construction of Monad EVM instances.
 
-use crate::{MonadBlockEnv, MonadEvm, MonadHardfork, MonadLimits, transaction::tx_registry};
-use evm2::{ExecutionConfig, Precompiles, evm::DynDatabase};
+use crate::{
+    MonadBlockEnv, MonadEvm, MonadHardfork, MonadLimits, monad_precompiles,
+    transaction::tx_registry,
+};
+use evm2::{ExecutionConfig, evm::DynDatabase};
 
 /// Builds EVMs for one chain using the supplied hardfork, block, and database.
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +27,8 @@ impl MonadEvmFactory {
     /// gas limit at the effective price. The beneficiary receives the priority fee.
     /// [`tx_gas_used()`](evm2::TxResultExt::tx_gas_used) reports the charged limit,
     /// and [`total_gas_spent`](evm2::TxResultExt::total_gas_spent) records execution
-    /// consumption. Instructions and precompiles are inherited from the base fork.
+    /// consumption. Cryptographic precompiles use Monad pricing and activation;
+    /// instructions are inherited from the base fork.
     ///
     /// ```
     /// use alloy_monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
@@ -53,7 +57,7 @@ impl MonadEvmFactory {
             block,
             tx_registry(),
             db,
-            Precompiles::base(spec.into_eth_spec()),
+            monad_precompiles(spec),
         )
     }
 }
