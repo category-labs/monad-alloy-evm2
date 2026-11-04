@@ -27,7 +27,8 @@ impl MonadEvmFactory {
     /// gas limit at the effective price. The beneficiary receives the priority fee.
     /// [`tx_gas_used()`](evm2::TxResultExt::tx_gas_used) reports the charged limit,
     /// and [`total_gas_spent`](evm2::TxResultExt::total_gas_spent) records execution
-    /// consumption. Cryptographic precompiles use Monad pricing and activation;
+    /// consumption. Cryptographic precompiles use Monad pricing and activation.
+    /// `CREATE` and `CREATE2` reject delegated execution contexts; other
     /// instructions are inherited from the base fork.
     ///
     /// ```
