@@ -5,13 +5,13 @@
 //! pricing on every supported Monad hardfork.
 
 use crate::{MonadEvm, MonadEvmTypes, MonadHardfork};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Bytes, hex};
 use evm2::{
-    Precompiles,
+    Precompiles, crypto,
     interpreter::{GasTracker, Message},
+    precompile::PrecompileOutput,
     precompiles::{
-        P256VERIFY_OSAKA, Precompile, PrecompileHalt, PrecompileId, PrecompileResult, blake2,
-        bn254, kzg_point_evaluation, secp256k1,
+        P256VERIFY_OSAKA, Precompile, PrecompileHalt, PrecompileId, PrecompileResult, bn254,
     },
 };
 
@@ -29,6 +29,12 @@ pub const MONAD_EC_PAIRING_PER_POINT_GAS: u64 = 170_000;
 pub const MONAD_BLAKE2F_ROUND_GAS: u64 = 2;
 /// Gas charged for KZG point evaluation at address `0x0a`.
 pub const MONAD_POINT_EVALUATION_GAS: u64 = 200_000;
+
+/// Encoded field elements per blob and BLS scalar modulus, as specified by EIP-4844.
+const POINT_EVALUATION_RETURN_VALUE: [u8; 64] = hex!(
+    "0000000000000000000000000000000000000000000000000000000000001000"
+    "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
+);
 
 /// Builds the cryptographic precompile provider for `spec`.
 ///
@@ -58,9 +64,25 @@ fn ecrecover(
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    // The upstream implementation charges the remaining 3,000 before validation.
-    gas.spend(MONAD_ECRECOVER_GAS - 3_000)?;
-    secp256k1::run(&message.input, gas)
+    gas.spend(MONAD_ECRECOVER_GAS)?;
+
+    // Short inputs are right-padded with zeroes; bytes after the first 128 are ignored.
+    let mut input = [0u8; 128];
+    let len = message.input.len().min(input.len());
+    input[..len].copy_from_slice(&message.input[..len]);
+
+    // `v` must be a 32-byte big-endian integer equal to 27 or 28.
+    if !(input[32..63].iter().all(|&b| b == 0) && matches!(input[63], 27 | 28)) {
+        return Ok(PrecompileOutput::default());
+    }
+
+    let hash = input[..32].try_into().expect("32 hash bytes");
+    let signature = input[64..].try_into().expect("64 signature bytes");
+    let output = crypto()
+        .secp256k1_ecrecover(signature, input[63] - 27, hash)
+        .map(|address| Bytes::copy_from_slice(&address))
+        .unwrap_or_default();
+    Ok(PrecompileOutput::new(output))
 }
 
 fn ec_add(
@@ -98,9 +120,33 @@ fn blake2f(
         return Err(PrecompileHalt::Blake2WrongLength.into());
     }
     let rounds = u32::from_be_bytes(input[..4].try_into().expect("four round-count bytes"));
-    // The upstream implementation charges one more gas per round.
-    gas.spend(u64::from(rounds) * (MONAD_BLAKE2F_ROUND_GAS - 1))?;
-    blake2::run(input, gas)
+    gas.spend(u64::from(rounds) * MONAD_BLAKE2F_ROUND_GAS)?;
+
+    let final_block = match input[212] {
+        0 => false,
+        1 => true,
+        _ => return Err(PrecompileHalt::Blake2WrongFinalIndicatorFlag.into()),
+    };
+
+    let mut state = [0u64; 8];
+    for (word, bytes) in state.iter_mut().zip(input[4..68].as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*bytes);
+    }
+    let mut block = [0u64; 16];
+    for (word, bytes) in block.iter_mut().zip(input[68..196].as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*bytes);
+    }
+    let counters = [
+        u64::from_le_bytes(input[196..204].try_into().expect("eight counter bytes")),
+        u64::from_le_bytes(input[204..212].try_into().expect("eight counter bytes")),
+    ];
+    crypto().blake2_compress(rounds, &mut state, &block, &counters, final_block);
+
+    let mut output = [0u8; 64];
+    for (bytes, word) in output.as_chunks_mut::<8>().0.iter_mut().zip(state) {
+        *bytes = word.to_le_bytes();
+    }
+    Ok(PrecompileOutput::new(output.into()))
 }
 
 fn point_evaluation(
@@ -108,7 +154,26 @@ fn point_evaluation(
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    // The upstream implementation charges the remaining 50,000 before validation.
-    gas.spend(MONAD_POINT_EVALUATION_GAS - 50_000)?;
-    kzg_point_evaluation::run(&message.input, gas)
+    gas.spend(MONAD_POINT_EVALUATION_GAS)?;
+
+    let input = message.input.as_ref();
+    if input.len() != 192 {
+        return Err(PrecompileHalt::BlobInvalidInputLength.into());
+    }
+
+    // The versioned hash must match the commitment before verifying the proof.
+    let commitment = &input[96..144];
+    let mut versioned_hash = crypto().sha256(commitment);
+    versioned_hash[0] = 0x01;
+    if versioned_hash != input[..32] {
+        return Err(PrecompileHalt::BlobMismatchedVersion.into());
+    }
+
+    let z = input[32..64].try_into().expect("32 evaluation-point bytes");
+    let y = input[64..96].try_into().expect("32 evaluation-result bytes");
+    let commitment = commitment.try_into().expect("48 commitment bytes");
+    let proof = input[144..192].try_into().expect("48 proof bytes");
+    crypto().verify_kzg_proof(z, y, commitment, proof)?;
+
+    Ok(PrecompileOutput::new(Bytes::from_static(&POINT_EVALUATION_RETURN_VALUE)))
 }
