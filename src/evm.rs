@@ -1,6 +1,6 @@
 //! Monad types used by the evm2 interpreter.
 
-use crate::{MonadHardfork, instructions, monad_version};
+use crate::{MonadChainContext, MonadHardfork, instructions, monad_version};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId,
     env::BlockEnv, ethereum::TxEnvelope,
@@ -35,6 +35,8 @@ impl EvmTypesHost for MonadEvmTypes {
 /// Monad execution state shared by active call frames.
 #[derive(Clone, Debug, Default)]
 pub struct MonadEvmExt {
+    /// Block history and reserve policy supplied by the caller.
+    pub chain: MonadChainContext,
     pub(crate) memory_pool_offset: u64,
 }
 

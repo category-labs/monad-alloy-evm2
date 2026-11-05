@@ -6,11 +6,16 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 pub mod cfg;
 pub use cfg::{
     MONAD_MAX_CODE_SIZE, MONAD_MAX_INITCODE_SIZE, MONAD_MEMORY_LIMIT, MONAD_TX_GAS_LIMIT_CAP,
     MonadLimits, monad_gas_params, monad_memory_limit, monad_version,
 };
+
+pub mod chain;
+pub use chain::{MonadChainContext, default_max_reserve_balance};
 
 mod evm;
 pub use evm::{
@@ -29,6 +34,9 @@ pub mod page;
 
 pub mod precompiles;
 pub use precompiles::monad_precompiles;
+
+pub mod reserve_balance;
+pub use reserve_balance::{ReserveAccount, ReserveBalanceInit};
 
 pub mod spec;
 pub use spec::{
