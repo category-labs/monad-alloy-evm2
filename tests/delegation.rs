@@ -184,8 +184,8 @@ fn assert_matches_release(
         "{forks:?}: {expected:?}"
     );
     assert_eq!(actual.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
-    // Gas parity for Nine+ also depends on MIP-3 memory and MIP-8 storage pricing.
-    if forks.0 == MonadHardfork::MonadEight {
+    // Gas parity for Ten+ also depends on MIP-8 storage pricing.
+    if forks.0 < MonadHardfork::MonadTen {
         assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
     }
 }

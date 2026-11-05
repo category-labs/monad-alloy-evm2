@@ -13,12 +13,17 @@ pub use cfg::{
 };
 
 mod evm;
-pub use evm::{MonadBlockEnv, MonadEvm, MonadEvmConfig, MonadEvmTypes, MonadTxEnvelope};
+pub use evm::{
+    MonadBlockEnv, MonadEvm, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadTxEnvelope,
+};
 
 mod factory;
 pub use factory::MonadEvmFactory;
 
 mod instructions;
+
+mod memory;
+pub use memory::monad_memory_cost;
 
 pub mod precompiles;
 pub use precompiles::monad_precompiles;

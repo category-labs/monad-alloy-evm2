@@ -16,6 +16,7 @@ publish = false
 alloy-consensus = { version = "2.5", default-features = false }
 alloy-primitives = { version = "1.7", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d22acb0404ed93f7c4a", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d22acb0404ed93f7c4a" }
 
 # serde
 serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }

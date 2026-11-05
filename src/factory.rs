@@ -28,8 +28,9 @@ impl MonadEvmFactory {
     /// [`tx_gas_used()`](evm2::TxResultExt::tx_gas_used) reports the charged limit,
     /// and [`total_gas_spent`](evm2::TxResultExt::total_gas_spent) records execution
     /// consumption. Cryptographic precompiles use Monad pricing and activation.
-    /// `CREATE` and `CREATE2` reject delegated execution contexts; other
-    /// instructions are inherited from the base fork.
+    /// `CREATE` and `CREATE2` reject delegated execution contexts. Memory expansion
+    /// uses MIP-3 pricing from MonadNine; enabled memory limits are shared by active
+    /// call frames. Other instructions are inherited from the base fork.
     ///
     /// ```
     /// use alloy_monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};

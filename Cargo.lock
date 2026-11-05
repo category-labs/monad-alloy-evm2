@@ -155,6 +155,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "evm2",
+ "evm2-macros",
  "monad-revm",
  "revm",
  "serde",
