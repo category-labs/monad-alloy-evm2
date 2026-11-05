@@ -184,10 +184,7 @@ fn assert_matches_release(
         "{forks:?}: {expected:?}"
     );
     assert_eq!(actual.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
-    // Gas parity for Ten+ also depends on MIP-8 storage pricing.
-    if forks.0 < MonadHardfork::MonadTen {
-        assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
-    }
+    assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
 }
 
 fn code(bytes: impl Into<Bytes>) -> Bytecode {

@@ -25,6 +25,8 @@ mod instructions;
 mod memory;
 pub use memory::monad_memory_cost;
 
+pub mod page;
+
 pub mod precompiles;
 pub use precompiles::monad_precompiles;
 

@@ -1,4 +1,4 @@
-//! Monad memory pricing, pooled limits and delegated creation restrictions.
+//! Monad memory and storage pricing, pooled limits and delegation restrictions.
 
 use crate::{MonadEvmTypes, memory::resize_with_gas_reserve};
 use evm2::{
@@ -12,6 +12,12 @@ use evm2::{
 use evm2_macros::instruction;
 
 mod memory;
+mod storage;
+
+pub(crate) const fn configure_mip8(config: &mut OpcodeConfig<MonadEvmTypes>) {
+    config.set_instruction::<storage::sload>(op::SLOAD, crate::page::BASE_COST as u16);
+    config.set_instruction::<storage::sstore>(op::SSTORE, 0);
+}
 
 pub(crate) const fn configure<const MIP3: bool>(config: &mut OpcodeConfig<MonadEvmTypes>) {
     config.set_instruction::<memory::mload<MIP3>>(op::MLOAD, gas::VERYLOW as u16);

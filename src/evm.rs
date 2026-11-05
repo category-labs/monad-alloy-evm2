@@ -90,6 +90,9 @@ impl<const BASE_SPEC_ID: u32, const MONAD_SPEC_ID: u32> EvmConfig<MonadEvmTypes>
             } else {
                 instructions::configure::<false>(&mut config);
             }
+            if MONAD_SPEC_ID >= MonadHardfork::MonadTen as u32 {
+                instructions::configure_mip8(&mut config);
+            }
         }
         config
     };

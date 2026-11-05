@@ -4,7 +4,10 @@
 //! transfers take place during execution and can fail after the fee is paid.
 //! Receipts count the full gas limit even when the interpreter finishes early.
 
-use crate::{MonadEvm, MonadEvmTypes, MonadTxEnvelope};
+use crate::{
+    MonadEvm, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
+    page::{PageAccess, StoragePageKey},
+};
 use alloy_consensus::{Transaction, TxType, Typed2718};
 use alloy_primitives::{Address, U256, address};
 use core::fmt;
@@ -106,6 +109,14 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
     warm_base_accounts(host, tx.kind());
     if let Some(access_list) = tx.access_list() {
         warm_access_list(host, access_list);
+        if host.config_spec_id() >= MonadHardfork::MonadTen {
+            for item in &access_list.0 {
+                for slot in &item.storage_keys {
+                    let key = StoragePageKey::from_slot(item.address, U256::from_be_bytes(slot.0));
+                    PageAccess::load(host, key).record_read(host);
+                }
+            }
+        }
     }
     Ok(PreparedTx { gas_price, intrinsic })
 }
