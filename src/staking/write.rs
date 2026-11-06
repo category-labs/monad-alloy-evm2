@@ -4,14 +4,15 @@ use super::{
     StorageReader,
     abi::gas,
     constants::{
-        ACTIVE_VALIDATOR_STAKE, DUST_THRESHOLD, MIN_AUTH_ADDRESS_STAKE, UNIT_BIAS, WITHDRAWAL_DELAY,
+        ACTIVE_VALIDATOR_STAKE, DUST_THRESHOLD, MAX_COMMISSION, MAX_EXTERNAL_REWARD,
+        MIN_AUTH_ADDRESS_STAKE, MIN_EXTERNAL_REWARD, UNIT_BIAS, WITHDRAWAL_DELAY,
     },
     interface::IMonadStaking::*,
     result::InterpreterResult,
     storage::{
-        STAKING_ADDRESS, accumulator_key, bitset_bucket_key, delegator_key, delegator_offsets,
-        global_slots, validator_key, validator_offsets, valset_slots, withdrawal_key,
-        withdrawal_offsets,
+        STAKING_ADDRESS, accumulator_key, bitset_bucket_key, consensus_view_key, delegator_key,
+        delegator_offsets, global_slots, snapshot_view_key, val_id_secp_key, validator_key,
+        validator_offsets, valset_slots, withdrawal_key, withdrawal_offsets,
     },
     types::{Delegator, ListNode, RefCountedAccumulator, Validator, validator_flags},
 };
@@ -1128,11 +1129,274 @@ pub fn handle_get_delegator_write<S: StakingStorage>(
     Ok((gas::GET_DELEGATOR, encoded.into()))
 }
 
+fn write_validator_acc<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    acc: U256,
+) -> Result<(), PrecompileHalt> {
+    write_storage_u256(
+        s,
+        validator_key(val_id, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN),
+        acc,
+    )
+}
+
+fn write_validator_commission<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    commission: U256,
+) -> Result<(), PrecompileHalt> {
+    write_storage_u256(s, validator_key(val_id, validator_offsets::COMMISSION), commission)
+}
+
+fn write_validator_full<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    val: &Validator,
+) -> Result<(), PrecompileHalt> {
+    write_validator_stake(s, val_id, val.stake)?;
+    write_validator_acc(s, val_id, val.accumulated_reward_per_token)?;
+    write_validator_commission(s, val_id, val.commission)?;
+
+    // Keys: 3 slots (secp33 + bls48 = 81 bytes)
+    let mut keys_concat = [0u8; 96];
+    keys_concat[0..33].copy_from_slice(&val.secp_pubkey);
+    keys_concat[33..81].copy_from_slice(&val.bls_pubkey);
+    let slot0: [u8; 32] = keys_concat[0..32].try_into().unwrap();
+    let slot1: [u8; 32] = keys_concat[32..64].try_into().unwrap();
+    let slot2: [u8; 32] = keys_concat[64..96].try_into().unwrap();
+    write_storage_u256(
+        s,
+        validator_key(val_id, validator_offsets::KEYS),
+        U256::from_be_bytes(slot0),
+    )?;
+    write_storage_u256(
+        s,
+        validator_key(val_id, validator_offsets::KEYS + 1),
+        U256::from_be_bytes(slot1),
+    )?;
+    write_storage_u256(
+        s,
+        validator_key(val_id, validator_offsets::KEYS + 2),
+        U256::from_be_bytes(slot2),
+    )?;
+
+    // Address + flags packed
+    write_validator_flags(s, val_id, val, val.flags)?;
+    write_validator_unclaimed_rewards(s, val_id, val.unclaimed_rewards)?;
+    Ok(())
+}
+
+/// Handle changeCommission(uint64, uint256) => bool
+pub fn handle_change_commission<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::CHANGE_COMMISSION {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = changeCommissionCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let val = read_validator(s, call.validatorId)?;
+    if !val.exists() {
+        return Err(PrecompileHalt::Other("unknown validator".into()));
+    }
+    if *caller != val.auth_address {
+        return Err(PrecompileHalt::Other("requires auth address".into()));
+    }
+    if call.commission > MAX_COMMISSION {
+        return Err(PrecompileHalt::Other("commission too high".into()));
+    }
+
+    let old_commission = val.commission;
+    if call.commission != old_commission {
+        write_validator_commission(s, call.validatorId, call.commission)?;
+        // Emit CommissionChanged event
+        let topics =
+            vec![CommissionChanged::SIGNATURE_HASH, B256::from(U256::from(call.validatorId))];
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&old_commission.to_be_bytes::<32>());
+        data.extend_from_slice(&call.commission.to_be_bytes::<32>());
+        emit_event(s, topics, data)?;
+    }
+
+    let encoded = changeCommissionCall::abi_encode_returns(&true);
+    Ok((gas::CHANGE_COMMISSION, encoded.into()))
+}
+
+/// Handle externalReward(uint64) => bool
+pub fn handle_external_reward<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+    call_value: U256,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::EXTERNAL_REWARD {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = externalRewardCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let val = read_validator(s, call.validatorId)?;
+    if !val.exists() {
+        return Err(PrecompileHalt::Other("unknown validator".into()));
+    }
+
+    // Get active stake from consensus/snapshot view
+    let in_boundary = read_in_boundary(s)?;
+    let view_key = if in_boundary {
+        snapshot_view_key(call.validatorId, 0)
+    } else {
+        consensus_view_key(call.validatorId, 0)
+    };
+    let active_stake = read_u256(s, view_key)?;
+    if active_stake.is_zero() {
+        return Err(PrecompileHalt::Other("not in validator set".into()));
+    }
+
+    if call_value < MIN_EXTERNAL_REWARD {
+        return Err(PrecompileHalt::Other("external reward too small".into()));
+    }
+    if call_value > MAX_EXTERNAL_REWARD {
+        return Err(PrecompileHalt::Other("external reward too large".into()));
+    }
+
+    // Apply reward: accumulator += (reward * UNIT_BIAS) / active_stake
+    let reward_acc = checked_mul_div_u256(call_value, UNIT_BIAS, active_stake)?;
+    let new_acc = checked_add_u256(val.accumulated_reward_per_token, reward_acc)?;
+    write_validator_acc(s, call.validatorId, new_acc)?;
+    write_validator_unclaimed_rewards(
+        s,
+        call.validatorId,
+        checked_add_u256(val.unclaimed_rewards, call_value)?,
+    )?;
+
+    // Emit ValidatorRewarded event
+    let epoch = read_epoch(s)?;
+    let topics = vec![
+        ValidatorRewarded::SIGNATURE_HASH,
+        B256::from(U256::from(call.validatorId)),
+        B256::from(U256::from_be_slice(caller.as_slice())),
+    ];
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&call_value.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    let encoded = externalRewardCall::abi_encode_returns(&true);
+    Ok((gas::EXTERNAL_REWARD, encoded.into()))
+}
+
+/// Registers a validator using monad-revm 0.8.0 compatibility rules.
+///
+/// Signatures are not verified. Lookup identifiers use the authorization address
+/// and first 20 BLS-key bytes, unlike the C++ consensus implementation.
+pub fn handle_add_validator<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    _caller: &Address,
+    call_value: U256,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::ADD_VALIDATOR {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = addValidatorCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    // Decode payload: secp_pubkey(33) + bls_pubkey(48) + auth_address(20) + signed_stake(32) +
+    // commission(32) = 165 bytes
+    let payload = &call.payload;
+    if payload.len() < 165 {
+        return Err(PrecompileHalt::Other("invalid input".into()));
+    }
+
+    let mut secp_pubkey = [0u8; 33];
+    secp_pubkey.copy_from_slice(&payload[0..33]);
+    let mut bls_pubkey = [0u8; 48];
+    bls_pubkey.copy_from_slice(&payload[33..81]);
+    let auth_address = Address::from_slice(&payload[81..101]);
+    let signed_stake = U256::from_be_slice(&payload[101..133]);
+    let commission = U256::from_be_slice(&payload[133..165]);
+
+    // Validate
+    if call_value != signed_stake {
+        return Err(PrecompileHalt::Other("invalid input".into()));
+    }
+    if call_value < MIN_AUTH_ADDRESS_STAKE {
+        return Err(PrecompileHalt::Other("insufficient stake".into()));
+    }
+    if commission > MAX_COMMISSION {
+        return Err(PrecompileHalt::Other("commission too high".into()));
+    }
+
+    // Match the 0.8.0 registration lookup rules; signatures are not verified.
+    let secp_addr = auth_address;
+    let bls_addr = Address::from_slice(&bls_pubkey[0..20]);
+
+    // Check validator doesn't already exist
+    let existing_secp = read_u64(s, val_id_secp_key(&secp_addr))?;
+    if existing_secp != 0 {
+        return Err(PrecompileHalt::Other("validator exists".into()));
+    }
+    let existing_bls = read_u64(s, super::storage::val_id_bls_key(&bls_addr))?;
+    if existing_bls != 0 {
+        return Err(PrecompileHalt::Other("validator exists".into()));
+    }
+
+    // Increment last_val_id
+    let last_val_id = read_u64(s, global_slots::LAST_VAL_ID)?;
+    let new_val_id = last_val_id + 1;
+    write_storage_u64(s, global_slots::LAST_VAL_ID, new_val_id)?;
+
+    // Store ID mappings
+    write_storage_u64(s, val_id_secp_key(&secp_addr), new_val_id)?;
+    write_storage_u64(s, super::storage::val_id_bls_key(&bls_addr), new_val_id)?;
+
+    // Create validator
+    let val = Validator {
+        stake: U256::ZERO,
+        accumulated_reward_per_token: U256::ZERO,
+        commission,
+        secp_pubkey,
+        bls_pubkey,
+        auth_address,
+        flags: validator_flags::STAKE_TOO_LOW,
+        unclaimed_rewards: U256::ZERO,
+    };
+    write_validator_full(s, new_val_id, &val)?;
+
+    // Emit ValidatorCreated event
+    let topics = vec![
+        ValidatorCreated::SIGNATURE_HASH,
+        B256::from(U256::from(new_val_id)),
+        B256::from(U256::from_be_slice(auth_address.as_slice())),
+    ];
+    let data = commission.to_be_bytes::<32>().to_vec();
+    emit_event(s, topics, data)?;
+
+    // Delegate initial stake (from auth_address, not caller)
+    internal_delegate(s, new_val_id, &auth_address, call_value)?;
+
+    let encoded = addValidatorCall::abi_encode_returns(&new_val_id);
+    Ok((gas::ADD_VALIDATOR, encoded.into()))
+}
+
 /// Whether the selector needs writable staking storage.
 pub const fn is_write_selector(selector: [u8; 4]) -> bool {
     matches!(
         selector,
         delegateCall::SELECTOR
+            | addValidatorCall::SELECTOR
+            | changeCommissionCall::SELECTOR
+            | externalRewardCall::SELECTOR
             | undelegateCall::SELECTOR
             | withdrawCall::SELECTOR
             | compoundCall::SELECTOR
@@ -1157,6 +1421,14 @@ pub fn run_staking_write<S: StakingStorage>(
     };
     let result = match selector {
         delegateCall::SELECTOR => handle_delegate(storage, input, gas_limit, caller, call_value),
+        addValidatorCall::SELECTOR => {
+            handle_add_validator(storage, input, gas_limit, caller, call_value)
+        }
+        externalRewardCall::SELECTOR => {
+            handle_external_reward(storage, input, gas_limit, caller, call_value)
+        }
+        changeCommissionCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_change_commission(storage, input, gas_limit, caller)),
         undelegateCall::SELECTOR => super::function_not_payable(&call_value)
             .and_then(|_| handle_undelegate(storage, input, gas_limit, caller)),
         withdrawCall::SELECTOR => super::function_not_payable(&call_value)

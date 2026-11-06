@@ -2,6 +2,10 @@
 
 Monad execution on [evm2](https://github.com/alloy-rs/evm2).
 
+Validator registration follows monad-revm 0.8.0 compatibility rules: it does not
+verify validator signatures and uses simplified public-key lookup identifiers.
+This differs from validator admission in the C++ consensus client.
+
 ## Development
 
 Requires Rust 1.96 or later. With [rustup](https://rustup.rs/) installed, Cargo

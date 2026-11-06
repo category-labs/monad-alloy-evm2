@@ -8,11 +8,12 @@ use alloy_monad_evm2::{
     staking::{
         STAKING_ADDRESS,
         abi::gas,
-        constants::{MON, UNIT_BIAS},
+        constants::{MIN_AUTH_ADDRESS_STAKE, MON, UNIT_BIAS},
         interface::IMonadStaking::*,
         storage::{
-            accumulator_key, delegator_key, delegator_offsets, global_slots, validator_key,
-            validator_offsets, valset_slots,
+            accumulator_key, consensus_view_key, delegator_key, delegator_offsets, global_slots,
+            snapshot_view_key, validator_key, validator_offsets, valset_slots, withdrawal_key,
+            withdrawal_offsets,
         },
     },
 };
@@ -27,10 +28,148 @@ use revm::{
 };
 use std::collections::BTreeMap;
 
-use alloy_monad_evm2::staking::storage::{withdrawal_key, withdrawal_offsets};
-
 const SENDER: Address = Address::repeat_byte(0x11);
 const VALIDATOR: u64 = 7;
+
+fn registration(stake: U256, commission: U256) -> Vec<u8> {
+    let mut payload = vec![2; 33];
+    payload.extend([3; 48]);
+    payload.extend(SENDER.as_slice());
+    payload.extend(stake.to_be_bytes::<32>());
+    payload.extend(commission.to_be_bytes::<32>());
+    // The 0.8.0 compatibility path accepts these without signature verification.
+    addValidatorCall {
+        payload: payload.into(),
+        signedSecpMessage: Bytes::new(),
+        signedBlsMessage: Bytes::new(),
+    }
+    .abi_encode()
+}
+
+#[test]
+fn validator_registration_matches_release_compatibility_rules() {
+    let stake = MIN_AUTH_ADDRESS_STAKE;
+    for spec in MonadHardfork::ALL {
+        let add = payable(registration(stake, MON / U256::from(10)), stake);
+        let results = assert_calls(
+            spec,
+            &prestate(),
+            &[
+                add.clone(),
+                add,
+                call(getValidatorCall { validatorId: 1 }.abi_encode()),
+                call(getDelegatorCall { validatorId: 1, delegator: SENDER }.abi_encode()),
+            ],
+        );
+        assert!(results[0].is_success());
+        assert_eq!(addValidatorCall::abi_decode_returns(&results[0].output).unwrap(), 1);
+        assert!(!results[1].is_success());
+        let validator = getValidatorCall::abi_decode_returns(&results[2].output).unwrap();
+        assert_eq!(validator.authAddress, SENDER);
+        assert_eq!(validator.stake, stake);
+        assert_eq!(validator.secpPubkey.as_ref(), &[2; 33]);
+        assert_eq!(validator.blsPubkey.as_ref(), &[3; 48]);
+        let delegator = getDelegatorCall::abi_decode_returns(&results[3].output).unwrap();
+        assert_eq!(delegator.deltaStake, stake);
+        for invalid in [
+            payable(registration(stake, MON), stake - U256::ONE),
+            payable(registration(stake - U256::ONE, MON), stake - U256::ONE),
+            payable(registration(stake, MON + U256::ONE), stake),
+            payable(
+                addValidatorCall {
+                    payload: Bytes::new(),
+                    signedSecpMessage: Bytes::new(),
+                    signedBlsMessage: Bytes::new(),
+                }
+                .abi_encode(),
+                stake,
+            ),
+        ] {
+            assert!(!assert_calls(spec, &prestate(), &[invalid])[0].is_success());
+        }
+    }
+}
+
+#[test]
+fn commissions_require_authority_and_emit_only_when_changed() {
+    for spec in MonadHardfork::ALL {
+        let change =
+            call(changeCommissionCall { validatorId: VALIDATOR, commission: MON }.abi_encode());
+        let results = assert_calls(
+            spec,
+            &prestate(),
+            &[
+                change.clone(),
+                change.clone(),
+                call(
+                    changeCommissionCall { validatorId: VALIDATOR, commission: MON + U256::ONE }
+                        .abi_encode(),
+                ),
+                call(getValidatorCall { validatorId: VALIDATOR }.abi_encode()),
+            ],
+        );
+        assert!(results[0].is_success());
+        assert_eq!(results[0].logs.len(), 1);
+        assert!(results[1].is_success());
+        assert!(results[1].logs.is_empty());
+        assert!(!results[2].is_success());
+        let validator = getValidatorCall::abi_decode_returns(&results[3].output).unwrap();
+        assert_eq!(validator.commission, MON);
+        let mut slots = prestate();
+        slots.push((
+            validator_key(VALIDATOR, validator_offsets::ADDRESS_FLAGS),
+            U256::from_be_slice(Address::repeat_byte(0x55).as_slice()) << 96,
+        ));
+        let results = assert_calls(spec, &slots, &[change]);
+        assert_eq!(results[0].output.as_ref(), b"requires auth address");
+    }
+}
+
+#[test]
+fn external_rewards_use_the_consensus_or_snapshot_stake() {
+    for spec in MonadHardfork::ALL {
+        for boundary in [false, true] {
+            let mut slots = prestate();
+            slots.extend([
+                (global_slots::IN_BOUNDARY, U256::from(u8::from(boundary)) << 248),
+                (consensus_view_key(VALIDATOR, 0), MON * U256::from(100)),
+                (snapshot_view_key(VALIDATOR, 0), MON * U256::from(50)),
+            ]);
+            let results = assert_calls(
+                spec,
+                &slots,
+                &[
+                    payable(externalRewardCall { validatorId: VALIDATOR }.abi_encode(), MON),
+                    call(getValidatorCall { validatorId: VALIDATOR }.abi_encode()),
+                ],
+            );
+            assert!(results[0].is_success());
+            let validator = getValidatorCall::abi_decode_returns(&results[1].output).unwrap();
+            assert_eq!(validator.unclaimedRewards, MON);
+            assert_eq!(
+                validator.accRewardPerToken,
+                UNIT_BIAS / U256::from(if boundary { 50 } else { 100 })
+            );
+        }
+    }
+}
+
+#[test]
+fn external_reward_overflow_reverts_accumulator_and_value_transfer() {
+    let mut slots = prestate();
+    slots.extend([
+        (consensus_view_key(VALIDATOR, 0), MON),
+        (validator_key(VALIDATOR, validator_offsets::UNCLAIMED_REWARDS), U256::MAX),
+    ]);
+    for spec in MonadHardfork::ALL {
+        let reward = payable(externalRewardCall { validatorId: VALIDATOR }.abi_encode(), MON);
+        let results = assert_calls(spec, &slots, &[reward.clone(), reward]);
+        for result in results {
+            assert_eq!(result.output.as_ref(), b"internal error");
+            assert!(result.logs.is_empty());
+        }
+    }
+}
 
 fn payable(input: impl Into<Bytes>, value: U256) -> Call {
     Call { value, ..call(input) }

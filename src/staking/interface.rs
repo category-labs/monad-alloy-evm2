@@ -45,7 +45,7 @@ alloy_sol_types::sol! {
         function compound(uint64 validatorId) external returns (bool success);
         function claimRewards(uint64 validatorId) external returns (bool success);
         function changeCommission(uint64 validatorId, uint256 commission) external returns (bool success);
-        function externalReward(uint64 validatorId) external returns (bool success);
+        function externalReward(uint64 validatorId) external payable returns (bool success);
 
         // Syscalls
         function syscallOnEpochChange(uint64 epoch) external;
