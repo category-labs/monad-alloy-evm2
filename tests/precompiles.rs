@@ -108,7 +108,15 @@ fn cryptographic_addresses_match_release_and_are_prewarmed() {
     for (spec, reference_spec) in FORKS {
         let provider = monad_precompiles(spec);
         let reference = ReferencePrecompiles::new_with_spec(reference_spec);
-        assert_eq!(provider.addresses().into_iter().collect::<BTreeSet<_>>(), expected, "{spec}");
+        let mut all_addresses = expected.clone();
+        if spec >= MonadHardfork::MonadNine {
+            all_addresses.insert(address(0x1001));
+        }
+        assert_eq!(
+            provider.addresses().into_iter().collect::<BTreeSet<_>>(),
+            all_addresses,
+            "{spec}"
+        );
         assert_eq!(
             reference.precompiles().addresses().copied().collect::<BTreeSet<_>>(),
             expected,

@@ -20,6 +20,7 @@ pub use chain::{MonadChainContext, default_max_reserve_balance};
 mod evm;
 pub use evm::{
     MonadBlockEnv, MonadEvm, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadTxEnvelope,
+    MonadTxResultExt,
 };
 
 mod factory;

@@ -1,5 +1,18 @@
 //! Account views and transaction inputs for Monad reserve-balance tracking.
 
+mod precompile;
+pub use precompile::{
+    DIPPED_INTO_RESERVE_GAS, DIPPED_INTO_RESERVE_SELECTOR, FALLBACK_GAS, IReserveBalance,
+    RESERVE_BALANCE_ADDRESS, ReserveBalanceError, run_reserve_balance_precompile,
+};
+
+mod sync;
+pub(crate) use sync::{ReserveBalanceSync, begin_reserve_balance_tx, end_reserve_balance_tx};
+pub use sync::{dipped_into_reserve, reserve_account, sync_reserve_balance};
+
+pub mod tracker;
+pub use tracker::ReserveBalanceTracker;
+
 use crate::{MonadChainContext, MonadHardfork};
 use alloy_primitives::{Address, B256, U256};
 

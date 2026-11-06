@@ -154,6 +154,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
+ "alloy-sol-types",
  "evm2",
  "evm2-macros",
  "monad-revm",

@@ -4,6 +4,7 @@
 //! EIP-7823 input limits and EIP-7883 pricing. P-256 verification uses EIP-7951
 //! pricing on every supported Monad hardfork.
 
+use crate::reserve_balance::{RESERVE_BALANCE_ADDRESS, run_reserve_balance_precompile};
 use crate::{MonadEvm, MonadEvmTypes, MonadHardfork};
 use alloy_primitives::{Address, Bytes, hex};
 use evm2::{
@@ -56,6 +57,13 @@ pub fn monad_precompiles(spec: MonadHardfork) -> Precompiles<MonadEvmTypes> {
         ),
         P256VERIFY_OSAKA(),
     ]);
+    if spec >= MonadHardfork::MonadNine {
+        precompiles.as_map_mut().insert(Precompile::new(
+            RESERVE_BALANCE_ADDRESS,
+            PrecompileId::custom("MonadReserveBalance"),
+            run_reserve_balance_precompile,
+        ));
+    }
     precompiles
 }
 

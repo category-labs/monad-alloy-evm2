@@ -1,5 +1,6 @@
 //! Monad types used by the evm2 interpreter.
 
+use crate::reserve_balance::{ReserveBalanceSync, ReserveBalanceTracker};
 use crate::{MonadChainContext, MonadHardfork, instructions, monad_version};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId,
@@ -27,7 +28,7 @@ impl EvmTypesHost for MonadEvmTypes {
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();
-    type TxResultExt = ();
+    type TxResultExt = MonadTxResultExt;
     type BlockEnvExt = ();
     type Host<'a> = MonadEvm<'a>;
 }
@@ -37,7 +38,23 @@ impl EvmTypesHost for MonadEvmTypes {
 pub struct MonadEvmExt {
     /// Block history and reserve policy supplied by the caller.
     pub chain: MonadChainContext,
+    /// Reserve-balance state for the executing transaction.
+    pub reserve_balance: ReserveBalanceTracker,
+    /// Revert successful execution that violates reserve-balance rules.
+    ///
+    /// Disabled by default, matching monad-revm's caller-controlled enforcement.
+    pub revert_on_reserve_balance_violation: bool,
+    pub(crate) reserve_balance_sync: ReserveBalanceSync,
     pub(crate) memory_pool_offset: u64,
+}
+
+/// Reserve-balance outcome attached to a transaction result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonadTxResultExt {
+    /// Whether the final transaction state violates reserve-balance rules.
+    pub dipped_into_reserve: bool,
+    /// Whether reserve-balance enforcement reverted otherwise successful execution.
+    pub reverted_for_reserve_balance: bool,
 }
 
 impl MonadEvmExt {

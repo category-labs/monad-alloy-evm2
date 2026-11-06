@@ -5,11 +5,12 @@
 //! Receipts count the full gas limit even when the interpreter finishes early.
 
 use crate::{
-    MonadEvm, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
+    MonadEvm, MonadEvmTypes, MonadHardfork, MonadTxEnvelope, MonadTxResultExt,
     page::{PageAccess, StoragePageKey},
+    reserve_balance::{begin_reserve_balance_tx, end_reserve_balance_tx, sync_reserve_balance},
 };
 use alloy_consensus::{Transaction, TxType, Typed2718};
-use alloy_primitives::{Address, U256, address};
+use alloy_primitives::{Address, Bytes, U256, address};
 use core::fmt;
 use evm2::{
     EvmFeatures, TxResult,
@@ -25,7 +26,7 @@ use evm2::{
         warm_access_list, warm_base_accounts,
     },
     handler::GasSettlement,
-    interpreter::GasTracker,
+    interpreter::{GasTracker, InstrStop},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
 };
 
@@ -62,6 +63,7 @@ struct PreparedTx {
 
 fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
     let host = &mut *req.host;
+    end_reserve_balance_tx(host);
     let tx = req.envelope;
     let caller = req.tx.signer();
     let version = host.version();
@@ -143,9 +145,26 @@ fn charge_sender(
 }
 
 fn execute(req: Request<'_, '_>, prepared: PreparedTx) -> HandlerResult<TxResult<MonadEvmTypes>> {
-    let host = req.host;
-    let tx = req.envelope;
-    let caller = req.tx.signer();
+    let scope = ReserveScope { host: req.host };
+    execute_inner(scope.host, req.tx.signer(), req.envelope, prepared)
+}
+
+struct ReserveScope<'e, 'a> {
+    host: &'e mut MonadEvm<'a>,
+}
+
+impl Drop for ReserveScope<'_, '_> {
+    fn drop(&mut self) {
+        end_reserve_balance_tx(self.host);
+    }
+}
+
+fn execute_inner(
+    host: &mut MonadEvm<'_>,
+    caller: Address,
+    tx: &MonadTxEnvelope,
+    prepared: PreparedTx,
+) -> HandlerResult<TxResult<MonadEvmTypes>> {
     let gas_limit = tx.gas_limit();
     let chain_id = host.version().chain_id;
     let PreparedTx { gas_price, intrinsic } = prepared;
@@ -172,11 +191,24 @@ fn execute(req: Request<'_, '_>, prepared: PreparedTx) -> HandlerResult<TxResult
         tx.value(),
         &mut gas,
     )?;
+    begin_reserve_balance_tx(host, caller, gas_price, gas_limit)?;
+    let checkpoint = host.state().checkpoint();
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
+    sync_reserve_balance(host)?;
+    let reverted_for_reserve_balance = host.ext().revert_on_reserve_balance_violation
+        && result.stop.is_success()
+        && host.ext().reserve_balance.has_violation();
+    if reverted_for_reserve_balance {
+        let features = host.version().features;
+        host.state_mut().rollback(checkpoint, features);
+        result.stop = InstrStop::Revert;
+        result.output = Bytes::new();
+        result.created_address = None;
+    }
     result.gas.set_refunded(0);
     // A full-limit floor makes the receipt and beneficiary use the charged gas while
     // preserving actual execution consumption and the gas observed inside the EVM.
-    default_settle_gas(
+    let mut result = default_settle_gas(
         host,
         GasSettlement {
             caller,
@@ -187,5 +219,11 @@ fn execute(req: Request<'_, '_>, prepared: PreparedTx) -> HandlerResult<TxResult
             state_refund: 0,
             result,
         },
-    )
+    )?;
+    sync_reserve_balance(host)?;
+    result.ext = MonadTxResultExt {
+        dipped_into_reserve: host.ext().reserve_balance.has_violation(),
+        reverted_for_reserve_balance,
+    };
+    Ok(result)
 }
