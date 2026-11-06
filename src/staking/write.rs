@@ -1,19 +1,23 @@
-//! Settles delegator stake and rewards against the current epoch.
+//! Delegation, withdrawals and reward settlement with journaled storage.
 
 use super::{
     StorageReader,
     abi::gas,
-    constants::UNIT_BIAS,
-    interface::IMonadStaking::*,
-    storage::{
-        accumulator_key, delegator_key, delegator_offsets, global_slots, validator_key,
-        validator_offsets,
+    constants::{
+        ACTIVE_VALIDATOR_STAKE, DUST_THRESHOLD, MIN_AUTH_ADDRESS_STAKE, UNIT_BIAS, WITHDRAWAL_DELAY,
     },
-    types::{Delegator, RefCountedAccumulator},
+    interface::IMonadStaking::*,
+    result::InterpreterResult,
+    storage::{
+        STAKING_ADDRESS, accumulator_key, bitset_bucket_key, delegator_key, delegator_offsets,
+        global_slots, validator_key, validator_offsets, valset_slots, withdrawal_key,
+        withdrawal_offsets,
+    },
+    types::{Delegator, ListNode, RefCountedAccumulator, Validator, validator_flags},
 };
-use alloc::format;
-use alloy_primitives::{Address, Bytes, Log, U256};
-use alloy_sol_types::SolCall;
+use alloc::{format, vec, vec::Vec};
+use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256};
+use alloy_sol_types::{SolCall, SolEvent};
 use evm2::precompiles::PrecompileHalt;
 
 /// Extended storage trait for state-mutating staking operations.
@@ -65,6 +69,17 @@ fn write_storage_u256<S: StakingStorage>(
     s.sstore(key, value)
 }
 
+/// Write a u64 value to storage (left-aligned, big-endian).
+fn write_storage_u64<S: StakingStorage>(
+    s: &mut S,
+    key: U256,
+    value: u64,
+) -> Result<(), PrecompileHalt> {
+    let mut bytes = [0u8; 32];
+    bytes[0..8].copy_from_slice(&value.to_be_bytes());
+    s.sstore(key, U256::from_be_bytes(bytes))
+}
+
 fn read_u256<S: StorageReader>(s: &mut S, key: U256) -> Result<U256, PrecompileHalt> {
     s.sload(key)
 }
@@ -77,6 +92,54 @@ fn read_u64<S: StorageReader>(s: &mut S, key: U256) -> Result<u64, PrecompileHal
 
 fn read_epoch<S: StorageReader>(s: &mut S) -> Result<u64, PrecompileHalt> {
     read_u64(s, global_slots::EPOCH)
+}
+
+fn read_in_boundary<S: StorageReader>(s: &mut S) -> Result<bool, PrecompileHalt> {
+    let raw = read_u256(s, global_slots::IN_BOUNDARY)?;
+    Ok(raw != U256::ZERO)
+}
+
+fn read_validator<S: StorageReader>(s: &mut S, val_id: u64) -> Result<Validator, PrecompileHalt> {
+    let stake = read_u256(s, validator_key(val_id, validator_offsets::STAKE))?;
+    let accumulated_reward_per_token =
+        read_u256(s, validator_key(val_id, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN))?;
+    let commission = read_u256(s, validator_key(val_id, validator_offsets::COMMISSION))?;
+
+    let keys_slot_0 =
+        read_u256(s, validator_key(val_id, validator_offsets::KEYS))?.to_be_bytes::<32>();
+    let keys_slot_1 =
+        read_u256(s, validator_key(val_id, validator_offsets::KEYS + 1))?.to_be_bytes::<32>();
+    let keys_slot_2 =
+        read_u256(s, validator_key(val_id, validator_offsets::KEYS + 2))?.to_be_bytes::<32>();
+
+    let mut keys_concat = [0u8; 96];
+    keys_concat[0..32].copy_from_slice(&keys_slot_0);
+    keys_concat[32..64].copy_from_slice(&keys_slot_1);
+    keys_concat[64..96].copy_from_slice(&keys_slot_2);
+
+    let mut secp_pubkey = [0u8; 33];
+    let mut bls_pubkey = [0u8; 48];
+    secp_pubkey.copy_from_slice(&keys_concat[0..33]);
+    bls_pubkey.copy_from_slice(&keys_concat[33..81]);
+
+    let address_flags_raw =
+        read_u256(s, validator_key(val_id, validator_offsets::ADDRESS_FLAGS))?.to_be_bytes::<32>();
+    let auth_address = Address::from_slice(&address_flags_raw[0..20]);
+    let flags = u64::from_be_bytes(address_flags_raw[20..28].try_into().unwrap());
+
+    let unclaimed_rewards =
+        read_u256(s, validator_key(val_id, validator_offsets::UNCLAIMED_REWARDS))?;
+
+    Ok(Validator {
+        stake,
+        accumulated_reward_per_token,
+        commission,
+        secp_pubkey,
+        bls_pubkey,
+        auth_address,
+        flags,
+        unclaimed_rewards,
+    })
 }
 
 fn read_delegator<S: StorageReader>(
@@ -107,6 +170,18 @@ fn read_delegator<S: StorageReader>(
     })
 }
 
+fn read_list_node<S: StorageReader>(
+    s: &mut S,
+    val_id: u64,
+    addr: &Address,
+) -> Result<ListNode, PrecompileHalt> {
+    let slot6 = read_u256(s, delegator_key(val_id, addr, delegator_offsets::LIST_NODE))?
+        .to_be_bytes::<32>();
+    let slot7 = read_u256(s, delegator_key(val_id, addr, delegator_offsets::LIST_NODE + 1))?
+        .to_be_bytes::<32>();
+    Ok(ListNode::from_slots(slot6, slot7))
+}
+
 fn read_accumulator<S: StorageReader>(
     s: &mut S,
     epoch: u64,
@@ -119,12 +194,37 @@ fn read_accumulator<S: StorageReader>(
     Ok(RefCountedAccumulator { value, refcount })
 }
 
+fn write_validator_stake<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    stake: U256,
+) -> Result<(), PrecompileHalt> {
+    write_storage_u256(s, validator_key(val_id, validator_offsets::STAKE), stake)
+}
+
 fn write_validator_unclaimed_rewards<S: StakingStorage>(
     s: &mut S,
     val_id: u64,
     rewards: U256,
 ) -> Result<(), PrecompileHalt> {
     write_storage_u256(s, validator_key(val_id, validator_offsets::UNCLAIMED_REWARDS), rewards)
+}
+
+fn write_validator_flags<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    val: &Validator,
+    new_flags: u64,
+) -> Result<(), PrecompileHalt> {
+    // Slot 6 packs auth_address (20 bytes) + flags (8 bytes) + padding (4 bytes)
+    let mut slot6 = [0u8; 32];
+    slot6[0..20].copy_from_slice(val.auth_address.as_slice());
+    slot6[20..28].copy_from_slice(&new_flags.to_be_bytes());
+    write_storage_u256(
+        s,
+        validator_key(val_id, validator_offsets::ADDRESS_FLAGS),
+        U256::from_be_bytes(slot6),
+    )
 }
 
 fn write_delegator<S: StakingStorage>(
@@ -162,6 +262,65 @@ fn write_delegator<S: StakingStorage>(
     Ok(())
 }
 
+fn write_list_node<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    addr: &Address,
+    node: &ListNode,
+) -> Result<(), PrecompileHalt> {
+    let (slot6, slot7) = node.to_slots();
+    write_storage_u256(
+        s,
+        delegator_key(val_id, addr, delegator_offsets::LIST_NODE),
+        U256::from_be_bytes(slot6),
+    )?;
+    write_storage_u256(
+        s,
+        delegator_key(val_id, addr, delegator_offsets::LIST_NODE + 1),
+        U256::from_be_bytes(slot7),
+    )?;
+    Ok(())
+}
+
+fn write_withdrawal_request<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    addr: &Address,
+    wid: u8,
+    amount: U256,
+    acc: U256,
+    epoch: u64,
+) -> Result<(), PrecompileHalt> {
+    write_storage_u256(s, withdrawal_key(val_id, addr, wid, withdrawal_offsets::AMOUNT), amount)?;
+    write_storage_u256(s, withdrawal_key(val_id, addr, wid, withdrawal_offsets::ACCUMULATOR), acc)?;
+    write_storage_u64(s, withdrawal_key(val_id, addr, wid, withdrawal_offsets::EPOCH), epoch)?;
+    Ok(())
+}
+
+fn clear_withdrawal_request<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    addr: &Address,
+    wid: u8,
+) -> Result<(), PrecompileHalt> {
+    write_storage_u256(
+        s,
+        withdrawal_key(val_id, addr, wid, withdrawal_offsets::AMOUNT),
+        U256::ZERO,
+    )?;
+    write_storage_u256(
+        s,
+        withdrawal_key(val_id, addr, wid, withdrawal_offsets::ACCUMULATOR),
+        U256::ZERO,
+    )?;
+    write_storage_u256(
+        s,
+        withdrawal_key(val_id, addr, wid, withdrawal_offsets::EPOCH),
+        U256::ZERO,
+    )?;
+    Ok(())
+}
+
 fn write_accumulator<S: StakingStorage>(
     s: &mut S,
     epoch: u64,
@@ -172,6 +331,15 @@ fn write_accumulator<S: StakingStorage>(
     // Refcount stored as u256 (right-aligned standard integer encoding)
     write_storage_u256(s, accumulator_key(epoch, val_id, 1), U256::from(acc.refcount))?;
     Ok(())
+}
+
+/// Get the activation epoch for new delegations.
+///
+/// Returns `epoch + 1` normally, or `epoch + 2` if in the epoch delay period.
+fn get_activation_epoch<S: StorageReader>(s: &mut S) -> Result<u64, PrecompileHalt> {
+    let epoch = read_epoch(s)?;
+    let in_boundary = read_in_boundary(s)?;
+    Ok(if in_boundary { epoch + 2 } else { epoch + 1 })
 }
 
 /// Check if an epoch is active (has passed).
@@ -188,6 +356,21 @@ fn calculate_rewards(stake: U256, epoch_acc: U256, last_acc: U256) -> Result<U25
     // 2) checked_mul_div(delta, stake, UNIT_BIAS)
     let diff = checked_sub_u256(epoch_acc, last_acc)?;
     checked_mul_div_u256(diff, stake, UNIT_BIAS)
+}
+
+/// Increment the accumulator refcount for a validator at the activation epoch.
+///
+/// Snapshots the current validator accumulator value and increments the refcount.
+fn increment_accumulator_refcount<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+) -> Result<(), PrecompileHalt> {
+    let epoch = get_activation_epoch(s)?;
+    let mut acc = read_accumulator(s, epoch, val_id)?;
+    acc.refcount += 1;
+    acc.value =
+        read_u256(s, validator_key(val_id, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN))?;
+    write_accumulator(s, epoch, val_id, &acc)
 }
 
 /// Decrement the accumulator refcount and return the snapshotted value.
@@ -312,6 +495,608 @@ fn pull_delegator_up_to_date<S: StakingStorage>(
     Ok(del)
 }
 
+/// Insert a delegation into both linked lists.
+///
+/// - Validator → Delegator list (anext/aprev pointers)
+/// - Delegator → Validator list (inext/iprev pointers)
+fn linked_list_insert<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    delegator: &Address,
+) -> Result<(), PrecompileHalt> {
+    // Insert delegator into validator's list (key=val_id, ptr=delegator address)
+    linked_list_insert_address(s, val_id, delegator)?;
+    // Insert validator into delegator's list (key=delegator, ptr=val_id)
+    linked_list_insert_val_id(s, val_id, delegator)?;
+    Ok(())
+}
+
+/// Insert an address into the validator's delegator list.
+fn linked_list_insert_address<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    ptr: &Address,
+) -> Result<(), PrecompileHalt> {
+    if *ptr == Address::ZERO || *ptr == ListNode::SENTINEL_ADDRESS {
+        return Err(PrecompileHalt::Other("invalid input".into()));
+    }
+
+    let mut this_node = read_list_node(s, val_id, ptr)?;
+    // If aprev != empty, already in list
+    if this_node.aprev != Address::ZERO {
+        return Ok(());
+    }
+
+    let mut sentinel = read_list_node(s, val_id, &ListNode::SENTINEL_ADDRESS)?;
+    let next_ptr = sentinel.anext;
+
+    if next_ptr != Address::ZERO {
+        let mut next_node = read_list_node(s, val_id, &next_ptr)?;
+        next_node.aprev = *ptr;
+        write_list_node(s, val_id, &next_ptr, &next_node)?;
+    }
+
+    this_node.aprev = ListNode::SENTINEL_ADDRESS;
+    this_node.anext = next_ptr;
+    sentinel.anext = *ptr;
+
+    write_list_node(s, val_id, ptr, &this_node)?;
+    write_list_node(s, val_id, &ListNode::SENTINEL_ADDRESS, &sentinel)?;
+    Ok(())
+}
+
+/// Insert a validator ID into the delegator's validator list.
+fn linked_list_insert_val_id<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    delegator: &Address,
+) -> Result<(), PrecompileHalt> {
+    if val_id == 0 || val_id == ListNode::SENTINEL_VAL_ID {
+        return Err(PrecompileHalt::Other("invalid input".into()));
+    }
+
+    let mut this_node = read_list_node(s, val_id, delegator)?;
+    // If iprev != empty, already in list
+    if this_node.iprev != 0 {
+        return Ok(());
+    }
+
+    let mut sentinel = read_list_node(s, ListNode::SENTINEL_VAL_ID, delegator)?;
+    let next_ptr = sentinel.inext;
+
+    if next_ptr != 0 {
+        let mut next_node = read_list_node(s, next_ptr, delegator)?;
+        next_node.iprev = val_id;
+        write_list_node(s, next_ptr, delegator, &next_node)?;
+    }
+
+    this_node.iprev = ListNode::SENTINEL_VAL_ID;
+    this_node.inext = next_ptr;
+    sentinel.inext = val_id;
+
+    write_list_node(s, val_id, delegator, &this_node)?;
+    write_list_node(s, ListNode::SENTINEL_VAL_ID, delegator, &sentinel)?;
+    Ok(())
+}
+
+/// Remove a delegation from both linked lists.
+fn linked_list_remove<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    delegator: &Address,
+) -> Result<(), PrecompileHalt> {
+    linked_list_remove_address(s, val_id, delegator)?;
+    linked_list_remove_val_id(s, val_id, delegator)?;
+    Ok(())
+}
+
+/// Remove an address from the validator's delegator list.
+fn linked_list_remove_address<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    ptr: &Address,
+) -> Result<(), PrecompileHalt> {
+    let mut this_node = read_list_node(s, val_id, ptr)?;
+    // If aprev == empty, not in list
+    if this_node.aprev == Address::ZERO {
+        return Ok(());
+    }
+
+    let prev_ptr = this_node.aprev;
+    let next_ptr = this_node.anext;
+
+    let mut prev_node = read_list_node(s, val_id, &prev_ptr)?;
+    prev_node.anext = next_ptr;
+    write_list_node(s, val_id, &prev_ptr, &prev_node)?;
+
+    if next_ptr != Address::ZERO {
+        let mut next_node = read_list_node(s, val_id, &next_ptr)?;
+        next_node.aprev = prev_ptr;
+        write_list_node(s, val_id, &next_ptr, &next_node)?;
+    }
+
+    // Clear this node's list pointers
+    this_node.aprev = Address::ZERO;
+    this_node.anext = Address::ZERO;
+    write_list_node(s, val_id, ptr, &this_node)?;
+    Ok(())
+}
+
+/// Remove a validator ID from the delegator's validator list.
+fn linked_list_remove_val_id<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    delegator: &Address,
+) -> Result<(), PrecompileHalt> {
+    let mut this_node = read_list_node(s, val_id, delegator)?;
+    // If iprev == empty, not in list
+    if this_node.iprev == 0 {
+        return Ok(());
+    }
+
+    let prev_ptr = this_node.iprev;
+    let next_ptr = this_node.inext;
+
+    let mut prev_node = read_list_node(s, prev_ptr, delegator)?;
+    prev_node.inext = next_ptr;
+    write_list_node(s, prev_ptr, delegator, &prev_node)?;
+
+    if next_ptr != 0 {
+        let mut next_node = read_list_node(s, next_ptr, delegator)?;
+        next_node.iprev = prev_ptr;
+        write_list_node(s, next_ptr, delegator, &next_node)?;
+    }
+
+    this_node.iprev = 0;
+    this_node.inext = 0;
+    write_list_node(s, val_id, delegator, &this_node)?;
+    Ok(())
+}
+
+/// Add a validator to the execution valset bitset. Returns true if newly inserted.
+fn add_to_valset<S: StakingStorage>(s: &mut S, val_id: u64) -> Result<bool, PrecompileHalt> {
+    let bucket_key = bitset_bucket_key(val_id);
+    let set = read_u256(s, bucket_key)?;
+    let bit = (val_id & 0xFF) as usize;
+    let mask = U256::from(1u64) << bit;
+    let inserted = (set & mask).is_zero();
+    let new_set = set | mask;
+    write_storage_u256(s, bucket_key, new_set)?;
+
+    if inserted {
+        // Append to execution valset array
+        let len = read_u64(s, valset_slots::EXECUTION)?;
+        write_storage_u64(s, valset_slots::EXECUTION + U256::from(1 + len), val_id)?;
+        write_storage_u64(s, valset_slots::EXECUTION, len + 1)?;
+    }
+    Ok(inserted)
+}
+
+fn emit_event<S: StakingStorage>(
+    s: &mut S,
+    topics: Vec<B256>,
+    data: Vec<u8>,
+) -> Result<(), PrecompileHalt> {
+    s.emit_log(Log { address: STAKING_ADDRESS, data: LogData::new(topics, data.into()).unwrap() })
+}
+
+/// Update validator flags based on current state. Returns the new flags.
+fn update_validator_flags_after_delegate<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    val: &Validator,
+    del: &Delegator,
+    caller: &Address,
+) -> Result<u64, PrecompileHalt> {
+    let mut flags = val.flags;
+
+    // Clear STAKE_TOO_LOW if total stake meets threshold
+    if val.stake >= ACTIVE_VALIDATOR_STAKE {
+        flags &= !validator_flags::STAKE_TOO_LOW;
+    }
+
+    // Clear WITHDRAWN if auth address and their next-epoch stake meets minimum
+    if *caller == val.auth_address && del.total_stake() >= MIN_AUTH_ADDRESS_STAKE {
+        flags &= !validator_flags::WITHDRAWN;
+    }
+
+    if flags != val.flags {
+        write_validator_flags(s, val_id, val, flags)?;
+        // Emit ValidatorStatusChanged event
+        let topics = vec![ValidatorStatusChanged::SIGNATURE_HASH, B256::from(U256::from(val_id))];
+        let data = U256::from(flags).to_be_bytes::<32>().to_vec();
+        emit_event(s, topics, data)?;
+    }
+    Ok(flags)
+}
+
+fn update_validator_flags_after_undelegate<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    val: &Validator,
+    del: &Delegator,
+    caller: &Address,
+) -> Result<u64, PrecompileHalt> {
+    let mut flags = val.flags;
+
+    // Set STAKE_TOO_LOW if below threshold
+    if val.stake < ACTIVE_VALIDATOR_STAKE {
+        flags |= validator_flags::STAKE_TOO_LOW;
+    }
+
+    // Set WITHDRAWN if auth address and their next-epoch stake is below minimum
+    if *caller == val.auth_address && del.total_stake() < MIN_AUTH_ADDRESS_STAKE {
+        flags |= validator_flags::WITHDRAWN;
+    }
+
+    if flags != val.flags {
+        write_validator_flags(s, val_id, val, flags)?;
+        let topics = vec![ValidatorStatusChanged::SIGNATURE_HASH, B256::from(U256::from(val_id))];
+        let data = U256::from(flags).to_be_bytes::<32>().to_vec();
+        emit_event(s, topics, data)?;
+    }
+    Ok(flags)
+}
+
+fn internal_delegate<S: StakingStorage>(
+    s: &mut S,
+    val_id: u64,
+    caller: &Address,
+    amount: U256,
+) -> Result<(), PrecompileHalt> {
+    let mut del = pull_delegator_up_to_date(s, val_id, caller)?;
+    let in_boundary = read_in_boundary(s)?;
+    let activation_epoch = get_activation_epoch(s)?;
+
+    // Add to appropriate delta track
+    if in_boundary {
+        let need_acc = del.next_delta_epoch == 0;
+        del.next_delta_stake = checked_add_u256(del.next_delta_stake, amount)?;
+        del.next_delta_epoch = activation_epoch;
+        write_delegator(s, val_id, caller, &del)?;
+        if need_acc {
+            increment_accumulator_refcount(s, val_id)?;
+        }
+    } else {
+        let need_acc = del.delta_epoch == 0;
+        del.delta_stake = checked_add_u256(del.delta_stake, amount)?;
+        del.delta_epoch = activation_epoch;
+        write_delegator(s, val_id, caller, &del)?;
+        if need_acc {
+            increment_accumulator_refcount(s, val_id)?;
+        }
+    }
+
+    // Update validator total stake
+    let mut val = read_validator(s, val_id)?;
+    val.stake = checked_add_u256(val.stake, amount)?;
+    write_validator_stake(s, val_id, val.stake)?;
+
+    // Update flags
+    let flags = update_validator_flags_after_delegate(s, val_id, &val, &del, caller)?;
+
+    // Add to valset if flags are now OK
+    if flags == validator_flags::OK {
+        add_to_valset(s, val_id)?;
+    }
+
+    // Insert into linked lists
+    linked_list_insert(s, val_id, caller)?;
+
+    // Emit Delegate event
+    let topics = vec![
+        Delegate::SIGNATURE_HASH,
+        B256::from(U256::from(val_id)),
+        B256::from(U256::from_be_slice(caller.as_slice())),
+    ];
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&amount.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(activation_epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    Ok(())
+}
+
+/// Handle claimRewards(uint64) => bool
+pub fn handle_claim_rewards<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::CLAIM_REWARDS {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = claimRewardsCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let mut del = pull_delegator_up_to_date(s, call.validatorId, caller)?;
+
+    if !del.rewards.is_zero() {
+        let rewards = del.rewards;
+
+        // Transfer (solvency already checked in pull_delegator_up_to_date via reward_invariant)
+        s.transfer(STAKING_ADDRESS, *caller, rewards)?;
+
+        // Clear rewards
+        del.rewards = U256::ZERO;
+        write_delegator(s, call.validatorId, caller, &del)?;
+
+        // Emit ClaimRewards event
+        let epoch = read_epoch(s)?;
+        let topics = vec![
+            ClaimRewards::SIGNATURE_HASH,
+            B256::from(U256::from(call.validatorId)),
+            B256::from(U256::from_be_slice(caller.as_slice())),
+        ];
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&rewards.to_be_bytes::<32>());
+        data.extend_from_slice(&U256::from(epoch).to_be_bytes::<32>());
+        emit_event(s, topics, data)?;
+    }
+
+    let encoded = claimRewardsCall::abi_encode_returns(&true);
+    Ok((gas::CLAIM_REWARDS, encoded.into()))
+}
+
+/// Handle delegate(uint64) => bool
+pub fn handle_delegate<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+    call_value: U256,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::DELEGATE {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = delegateCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let val = read_validator(s, call.validatorId)?;
+    if !val.exists() {
+        return Err(PrecompileHalt::Other("unknown validator".into()));
+    }
+    // Zero-value delegate is a success no-op
+    if call_value.is_zero() {
+        let encoded = delegateCall::abi_encode_returns(&true);
+        return Ok((gas::DELEGATE, encoded.into()));
+    }
+    if call_value < DUST_THRESHOLD {
+        return Err(PrecompileHalt::Other("delegation is too small".into()));
+    }
+
+    internal_delegate(s, call.validatorId, caller, call_value)?;
+
+    let encoded = delegateCall::abi_encode_returns(&true);
+    Ok((gas::DELEGATE, encoded.into()))
+}
+
+/// Handle undelegate(uint64, uint256, uint8) => bool
+pub fn handle_undelegate<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::UNDELEGATE {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = undelegateCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    // No-op for zero amount
+    if call.amount.is_zero() {
+        let encoded = undelegateCall::abi_encode_returns(&true);
+        return Ok((gas::UNDELEGATE, encoded.into()));
+    }
+
+    let val = read_validator(s, call.validatorId)?;
+    if !val.exists() {
+        return Err(PrecompileHalt::Other("unknown validator".into()));
+    }
+
+    // Check withdrawal ID doesn't exist
+    let existing_wr = read_u256(
+        s,
+        withdrawal_key(call.validatorId, caller, call.withdrawId, withdrawal_offsets::AMOUNT),
+    )?;
+    if !existing_wr.is_zero() {
+        return Err(PrecompileHalt::Other("withdrawal id exists".into()));
+    }
+
+    // Pull delegator up to date
+    let mut del = pull_delegator_up_to_date(s, call.validatorId, caller)?;
+
+    // Check sufficient stake
+    let mut amount = call.amount;
+    if del.stake < amount {
+        return Err(PrecompileHalt::Other("insufficient stake".into()));
+    }
+
+    // Dust collection
+    let remaining = checked_sub_u256(del.stake, amount)?;
+    if !remaining.is_zero() && remaining < DUST_THRESHOLD {
+        amount = del.stake; // collect all including dust
+    }
+
+    // Save the accumulator before potential reset (needed for withdrawal request)
+    let wr_acc = del.accumulated_reward_per_token;
+
+    // Update delegator stake
+    del.stake = checked_sub_u256(del.stake, amount)?;
+    if del.stake.is_zero() {
+        del.accumulated_reward_per_token = U256::ZERO;
+    }
+
+    // Update validator stake
+    let mut val = read_validator(s, call.validatorId)?;
+    val.stake = checked_sub_u256(val.stake, amount)?;
+    write_validator_stake(s, call.validatorId, val.stake)?;
+
+    // Update flags. Don't remove from valset here — removal happens at snapshot time
+    // via pop-and-swap compaction at snapshot time.
+    update_validator_flags_after_undelegate(s, call.validatorId, &val, &del, caller)?;
+
+    // Create withdrawal request with the pre-reset accumulator
+    let activation_epoch = get_activation_epoch(s)?;
+    write_withdrawal_request(
+        s,
+        call.validatorId,
+        caller,
+        call.withdrawId,
+        amount,
+        wr_acc,
+        activation_epoch,
+    )?;
+    increment_accumulator_refcount(s, call.validatorId)?;
+
+    // Write updated delegator
+    write_delegator(s, call.validatorId, caller, &del)?;
+
+    // Remove from linked lists if no more stake
+    if !del.exists() {
+        linked_list_remove(s, call.validatorId, caller)?;
+    }
+
+    // Emit Undelegate event
+    let topics = vec![
+        Undelegate::SIGNATURE_HASH,
+        B256::from(U256::from(call.validatorId)),
+        B256::from(U256::from_be_slice(caller.as_slice())),
+    ];
+    let mut data = Vec::with_capacity(96);
+    data.extend_from_slice(&U256::from(call.withdrawId).to_be_bytes::<32>());
+    data.extend_from_slice(&amount.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(activation_epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    let encoded = undelegateCall::abi_encode_returns(&true);
+    Ok((gas::UNDELEGATE, encoded.into()))
+}
+
+/// Handle withdraw(uint64, uint8) => bool
+pub fn handle_withdraw<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::WITHDRAW {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = withdrawCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    // Load withdrawal request
+    let wr_amount = read_u256(
+        s,
+        withdrawal_key(call.validatorId, caller, call.withdrawId, withdrawal_offsets::AMOUNT),
+    )?;
+    if wr_amount.is_zero() {
+        return Err(PrecompileHalt::Other("unknown withdrawal id".into()));
+    }
+    let wr_acc = read_u256(
+        s,
+        withdrawal_key(call.validatorId, caller, call.withdrawId, withdrawal_offsets::ACCUMULATOR),
+    )?;
+    let wr_epoch = read_u64(
+        s,
+        withdrawal_key(call.validatorId, caller, call.withdrawId, withdrawal_offsets::EPOCH),
+    )?;
+
+    // Check withdrawal ready
+    let current_epoch = read_epoch(s)?;
+    if !is_epoch_active(current_epoch, wr_epoch) || wr_epoch + WITHDRAWAL_DELAY > current_epoch {
+        return Err(PrecompileHalt::Other("withdrawal not ready".into()));
+    }
+
+    // Decrement accumulator and calculate rewards
+    let epoch_acc = decrement_accumulator_refcount(s, wr_epoch, call.validatorId)?;
+    let rewards = calculate_rewards(wr_amount, epoch_acc, wr_acc)?;
+
+    // Check solvency
+    let val = read_validator(s, call.validatorId)?;
+    if val.unclaimed_rewards < rewards {
+        return Err(PrecompileHalt::Other("solvency error".into()));
+    }
+    write_validator_unclaimed_rewards(
+        s,
+        call.validatorId,
+        checked_sub_u256(val.unclaimed_rewards, rewards)?,
+    )?;
+
+    // Transfer total payout
+    let total_payout = checked_add_u256(wr_amount, rewards)?;
+    s.transfer(STAKING_ADDRESS, *caller, total_payout)?;
+
+    // Clear withdrawal request
+    clear_withdrawal_request(s, call.validatorId, caller, call.withdrawId)?;
+
+    // Emit Withdraw event
+    let topics = vec![
+        Withdraw::SIGNATURE_HASH,
+        B256::from(U256::from(call.validatorId)),
+        B256::from(U256::from_be_slice(caller.as_slice())),
+    ];
+    let mut data = Vec::with_capacity(96);
+    data.extend_from_slice(&U256::from(call.withdrawId).to_be_bytes::<32>());
+    data.extend_from_slice(&total_payout.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(current_epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    let encoded = withdrawCall::abi_encode_returns(&true);
+    Ok((gas::WITHDRAW, encoded.into()))
+}
+
+/// Handle compound(uint64) => bool
+pub fn handle_compound<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::COMPOUND {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+
+    let call = compoundCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let mut del = pull_delegator_up_to_date(s, call.validatorId, caller)?;
+
+    if !del.rewards.is_zero() {
+        let rewards = del.rewards;
+
+        // Clear rewards (solvency already checked in pull_delegator_up_to_date via
+        // reward_invariant)
+        del.rewards = U256::ZERO;
+        write_delegator(s, call.validatorId, caller, &del)?;
+
+        // Emit ClaimRewards event
+        let epoch = read_epoch(s)?;
+        let topics = vec![
+            ClaimRewards::SIGNATURE_HASH,
+            B256::from(U256::from(call.validatorId)),
+            B256::from(U256::from_be_slice(caller.as_slice())),
+        ];
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&rewards.to_be_bytes::<32>());
+        data.extend_from_slice(&U256::from(epoch).to_be_bytes::<32>());
+        emit_event(s, topics, data)?;
+
+        // Re-delegate the rewards (compound)
+        internal_delegate(s, call.validatorId, caller, rewards)?;
+    }
+
+    let encoded = compoundCall::abi_encode_returns(&true);
+    Ok((gas::COMPOUND, encoded.into()))
+}
+
 /// Handle getDelegator as a write operation.
 ///
 /// The canonical implementation calls `pull_delegator_up_to_date` which writes settled
@@ -341,4 +1126,48 @@ pub fn handle_get_delegator_write<S: StakingStorage>(
         nextDeltaEpoch: del.next_delta_epoch,
     });
     Ok((gas::GET_DELEGATOR, encoded.into()))
+}
+
+/// Whether the selector needs writable staking storage.
+pub const fn is_write_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        delegateCall::SELECTOR
+            | undelegateCall::SELECTOR
+            | withdrawCall::SELECTOR
+            | compoundCall::SELECTOR
+            | claimRewardsCall::SELECTOR
+            | getDelegatorCall::SELECTOR
+    )
+}
+
+/// Runs a state-changing staking method.
+///
+/// The storage implementation must roll back writes, transfers and logs when the
+/// returned result is unsuccessful.
+pub fn run_staking_write<S: StakingStorage>(
+    input: &[u8],
+    gas_limit: u64,
+    storage: &mut S,
+    caller: &Address,
+    call_value: U256,
+) -> InterpreterResult {
+    let Some(selector) = input.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()) else {
+        return super::reader_fallback_result(gas_limit);
+    };
+    let result = match selector {
+        delegateCall::SELECTOR => handle_delegate(storage, input, gas_limit, caller, call_value),
+        undelegateCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_undelegate(storage, input, gas_limit, caller)),
+        withdrawCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_withdraw(storage, input, gas_limit, caller)),
+        compoundCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_compound(storage, input, gas_limit, caller)),
+        claimRewardsCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_claim_rewards(storage, input, gas_limit, caller)),
+        getDelegatorCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_get_delegator_write(storage, input, gas_limit)),
+        _ => return super::reader_fallback_result(gas_limit),
+    };
+    super::handler_result(gas_limit, result)
 }

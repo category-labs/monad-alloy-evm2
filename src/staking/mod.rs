@@ -33,7 +33,7 @@ const MAX_VALIDATORS_PER_CALL: u32 = 100;
 /// Maximum entries returned by one delegation-list query.
 const LINKED_LIST_PAGINATION: u32 = 50;
 
-/// Executes a staking query with journaled storage and fixed protocol gas.
+/// Executes a staking operation with journaled storage and fixed protocol gas.
 pub fn run_staking_precompile(
     evm: &mut Evm<'_, MonadEvmTypes>,
     message: &Message<MonadEvmTypes>,
@@ -47,12 +47,18 @@ pub fn run_staking_precompile(
         return Err(PrecompileError::Revert(Bytes::new()));
     }
     let mut storage = EvmStakingStorage { evm, error: None };
-    let result = if message.input.get(..4) == Some(getDelegatorCall::SELECTOR.as_slice()) {
-        handler_result(
+    let result = if message
+        .input
+        .get(..4)
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+        .is_some_and(write::is_write_selector)
+    {
+        write::run_staking_write(
+            &message.input,
             message.gas_limit,
-            function_not_payable(&message.value).and_then(|_| {
-                write::handle_get_delegator_write(&mut storage, &message.input, message.gas_limit)
-            }),
+            &mut storage,
+            &message.caller,
+            message.value,
         )
     } else {
         run_staking_with_reader(&message.input, message.gas_limit, &mut storage, message.value)

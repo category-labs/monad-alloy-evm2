@@ -27,8 +27,183 @@ use revm::{
 };
 use std::collections::BTreeMap;
 
+use alloy_monad_evm2::staking::storage::{withdrawal_key, withdrawal_offsets};
+
 const SENDER: Address = Address::repeat_byte(0x11);
 const VALIDATOR: u64 = 7;
+
+fn payable(input: impl Into<Bytes>, value: U256) -> Call {
+    Call { value, ..call(input) }
+}
+
+#[test]
+fn delegation_updates_pending_stake_and_lists_without_duplicate_entries() {
+    for spec in MonadHardfork::ALL {
+        for boundary in [false, true] {
+            let mut slots = prestate();
+            slots.push((global_slots::IN_BOUNDARY, U256::from(u8::from(boundary)) << 248));
+            let results = assert_calls(
+                spec,
+                &slots,
+                &[
+                    payable(delegateCall { validatorId: VALIDATOR }.abi_encode(), MON),
+                    payable(delegateCall { validatorId: VALIDATOR }.abi_encode(), MON),
+                    call(
+                        getDelegatorCall { validatorId: VALIDATOR, delegator: SENDER }.abi_encode(),
+                    ),
+                    call(getDelegationsCall { delegator: SENDER, startValId: 0 }.abi_encode()),
+                    call(
+                        getDelegatorsCall { validatorId: VALIDATOR, startDelegator: Address::ZERO }
+                            .abi_encode(),
+                    ),
+                ],
+            );
+            assert!(results.iter().all(|r| r.is_success()));
+            let del = getDelegatorCall::abi_decode_returns(&results[2].output).unwrap();
+            assert_eq!(del.deltaStake + del.nextDeltaStake, MON * U256::from(2));
+            assert_eq!(del.deltaEpoch.max(del.nextDeltaEpoch), if boundary { 4 } else { 3 });
+            let delegations = getDelegationsCall::abi_decode_returns(&results[3].output).unwrap();
+            assert_eq!(delegations.valIds, vec![VALIDATOR]);
+        }
+    }
+}
+
+#[test]
+fn undelegation_records_delayed_withdrawal_and_rejects_duplicate_id() {
+    let mut slots = prestate();
+    slots.push((delegator_key(VALIDATOR, &SENDER, delegator_offsets::STAKE), MON));
+    for spec in MonadHardfork::ALL {
+        let results = assert_calls(
+            spec,
+            &slots,
+            &[
+                call(
+                    undelegateCall {
+                        validatorId: VALIDATOR,
+                        amount: MON / U256::from(2),
+                        withdrawId: 7,
+                    }
+                    .abi_encode(),
+                ),
+                call(
+                    undelegateCall { validatorId: VALIDATOR, amount: U256::ONE, withdrawId: 7 }
+                        .abi_encode(),
+                ),
+                call(withdrawCall { validatorId: VALIDATOR, withdrawId: 7 }.abi_encode()),
+                call(
+                    getWithdrawalRequestCall {
+                        validatorId: VALIDATOR,
+                        delegator: SENDER,
+                        withdrawId: 7,
+                    }
+                    .abi_encode(),
+                ),
+            ],
+        );
+        assert!(results[0].is_success());
+        assert!(!results[1].is_success());
+        assert!(!results[2].is_success());
+        let wr = getWithdrawalRequestCall::abi_decode_returns(&results[3].output).unwrap();
+        assert_eq!(wr.withdrawalAmount, MON / U256::from(2));
+        assert_eq!(wr.withdrawEpoch, 3);
+    }
+}
+
+#[test]
+fn mature_withdrawal_pays_principal_and_rewards_once() {
+    let mut slots = prestate();
+    slots.extend([
+        (withdrawal_key(VALIDATOR, &SENDER, 1, withdrawal_offsets::AMOUNT), MON),
+        (withdrawal_key(VALIDATOR, &SENDER, 1, withdrawal_offsets::EPOCH), U256::ONE << 192),
+        (accumulator_key(1, VALIDATOR, 0), UNIT_BIAS),
+        (accumulator_key(1, VALIDATOR, 1), U256::ONE << 192),
+        (validator_key(VALIDATOR, validator_offsets::UNCLAIMED_REWARDS), MON),
+    ]);
+    for spec in MonadHardfork::ALL {
+        let withdraw = call(withdrawCall { validatorId: VALIDATOR, withdrawId: 1 }.abi_encode());
+        let results = assert_calls(spec, &slots, &[withdraw.clone(), withdraw]);
+        assert!(results[0].is_success());
+        assert!(!results[1].is_success());
+        assert_eq!(results[0].logs.len(), 1);
+    }
+}
+
+#[test]
+fn reward_claims_and_compounding_settle_the_same_rewards() {
+    let mut slots = prestate();
+    slots.extend([
+        (delegator_key(VALIDATOR, &SENDER, delegator_offsets::STAKE), MON),
+        (validator_key(VALIDATOR, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN), UNIT_BIAS),
+        (validator_key(VALIDATOR, validator_offsets::UNCLAIMED_REWARDS), MON),
+    ]);
+    for spec in MonadHardfork::ALL {
+        for input in [
+            claimRewardsCall { validatorId: VALIDATOR }.abi_encode(),
+            compoundCall { validatorId: VALIDATOR }.abi_encode(),
+        ] {
+            let operation = call(input);
+            let results = assert_calls(
+                spec,
+                &slots,
+                &[
+                    operation.clone(),
+                    operation,
+                    call(
+                        getDelegatorCall { validatorId: VALIDATOR, delegator: SENDER }.abi_encode(),
+                    ),
+                ],
+            );
+            assert!(results.iter().all(|r| r.is_success()));
+            let del = getDelegatorCall::abi_decode_returns(&results[2].output).unwrap();
+            assert_eq!(del.unclaimedRewards, U256::ZERO);
+        }
+    }
+}
+
+#[test]
+fn failed_settlement_rolls_back_earlier_accumulator_writes() {
+    let mut slots = prestate();
+    slots.extend([
+        (delegator_key(VALIDATOR, &SENDER, delegator_offsets::DELTA_STAKE), MON),
+        (delegator_key(VALIDATOR, &SENDER, delegator_offsets::EPOCHS), U256::from(2) << 192),
+        (accumulator_key(2, VALIDATOR, 1), U256::ONE << 192),
+        (validator_key(VALIDATOR, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN), UNIT_BIAS),
+    ]);
+    for spec in MonadHardfork::ALL {
+        let query =
+            call(getDelegatorCall { validatorId: VALIDATOR, delegator: SENDER }.abi_encode());
+        let results = assert_calls(spec, &slots, &[query.clone(), query]);
+        for result in results {
+            assert_eq!(result.stop, InstrStop::Revert);
+            assert_eq!(result.output.as_ref(), b"solvency error");
+            assert!(result.logs.is_empty());
+        }
+    }
+}
+
+#[test]
+fn invalid_delegation_and_arithmetic_overflow_restore_transferred_value() {
+    for spec in MonadHardfork::ALL {
+        let results = assert_calls(
+            spec,
+            &prestate(),
+            &[
+                payable(delegateCall { validatorId: VALIDATOR }.abi_encode(), U256::ONE),
+                payable(delegateCall { validatorId: VALIDATOR + 1 }.abi_encode(), MON),
+                payable(claimRewardsCall { validatorId: VALIDATOR }.abi_encode(), MON),
+            ],
+        );
+        assert!(results.iter().all(|r| !r.is_success()));
+        let mut slots = prestate();
+        slots.push((validator_key(VALIDATOR, validator_offsets::STAKE), U256::MAX));
+        let result = assert_calls(
+            spec,
+            &slots,
+            &[payable(delegateCall { validatorId: VALIDATOR }.abi_encode(), MON)],
+        );
+        assert_eq!(result[0].output.as_ref(), b"internal error");
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Call {
