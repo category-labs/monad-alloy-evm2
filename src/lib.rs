@@ -19,9 +19,12 @@ pub use chain::{MonadChainContext, default_max_reserve_balance};
 
 mod evm;
 pub use evm::{
-    MonadBlockEnv, MonadEvm, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadTxEnvelope,
-    MonadTxResultExt,
+    MonadBlockEnv, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadHaltReason, MonadHost,
+    MonadMessageResultExt, MonadTxEnvelope, MonadTxResultExt,
 };
+
+mod executor;
+pub use executor::{MonadEvm, MonadExecutedTx};
 
 mod factory;
 pub use factory::MonadEvmFactory;

@@ -5,7 +5,7 @@
 //! Receipts count the full gas limit even when the interpreter finishes early.
 
 use crate::{
-    MonadEvm, MonadEvmTypes, MonadHardfork, MonadTxEnvelope, MonadTxResultExt,
+    MonadEvmTypes, MonadHaltReason, MonadHardfork, MonadHost, MonadTxEnvelope, MonadTxResultExt,
     page::{PageAccess, StoragePageKey},
     reserve_balance::{begin_reserve_balance_tx, end_reserve_balance_tx, sync_reserve_balance},
 };
@@ -64,6 +64,10 @@ struct PreparedTx {
 fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
     let host = &mut *req.host;
     end_reserve_balance_tx(host);
+    if host.ext().preserve_reserve_balance_tracker && !host.ext().reserve_balance.tracking_enabled()
+    {
+        return Err(HandlerError::external(MissingReserveContext));
+    }
     let tx = req.envelope;
     let caller = req.tx.signer();
     let version = host.version();
@@ -124,7 +128,7 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
 }
 
 fn charge_sender(
-    host: &mut MonadEvm<'_>,
+    host: &mut MonadHost<'_>,
     caller: Address,
     tx: &MonadTxEnvelope,
     gas_price: U256,
@@ -150,8 +154,30 @@ fn execute(req: Request<'_, '_>, prepared: PreparedTx) -> HandlerResult<TxResult
 }
 
 struct ReserveScope<'e, 'a> {
-    host: &'e mut MonadEvm<'a>,
+    host: &'e mut MonadHost<'a>,
 }
+
+#[derive(Debug)]
+struct MissingReserveContext;
+
+impl fmt::Display for MissingReserveContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("preserved synthetic calls require an initialized reserve tracker")
+    }
+}
+
+impl core::error::Error for MissingReserveContext {}
+
+#[derive(Debug)]
+struct MissingMonadExecutor;
+
+impl fmt::Display for MissingMonadExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Monad transactions must execute through MonadEvm")
+    }
+}
+
+impl core::error::Error for MissingMonadExecutor {}
 
 impl Drop for ReserveScope<'_, '_> {
     fn drop(&mut self) {
@@ -160,7 +186,7 @@ impl Drop for ReserveScope<'_, '_> {
 }
 
 fn execute_inner(
-    host: &mut MonadEvm<'_>,
+    host: &mut MonadHost<'_>,
     caller: Address,
     tx: &MonadTxEnvelope,
     prepared: PreparedTx,
@@ -192,15 +218,21 @@ fn execute_inner(
         &mut gas,
     )?;
     begin_reserve_balance_tx(host, caller, gas_price, gas_limit)?;
-    let checkpoint = host.state().checkpoint();
+    if !host.ext().preserve_reserve_balance_tracker {
+        host.ext_mut().reserve_execution.checkpoint = Some(host.state().checkpoint());
+        host.ext_mut().reserve_execution.depth = host.version().initial_call_depth;
+    }
+    let entered_execution = frame.is_some();
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
+    if entered_execution && !host.ext().reserve_execution.observed {
+        // Direct native-host entrypoints cannot compose the mandatory observer. Abort so
+        // bypassing the wrapper never accepts execution without reserve adjudication.
+        return Err(HandlerError::external(MissingMonadExecutor));
+    }
     sync_reserve_balance(host)?;
-    let reverted_for_reserve_balance = host.ext().revert_on_reserve_balance_violation
-        && result.stop.is_success()
-        && host.ext().reserve_balance.has_violation();
+    let reverted_for_reserve_balance = host.ext().reserve_execution.rejected;
     if reverted_for_reserve_balance {
-        let features = host.version().features;
-        host.state_mut().rollback(checkpoint, features);
+        // A tracing callback may edit the native outcome; protocol rejection remains final.
         result.stop = InstrStop::Revert;
         result.output = Bytes::new();
         result.created_address = None;
@@ -224,6 +256,8 @@ fn execute_inner(
     result.ext = MonadTxResultExt {
         dipped_into_reserve: host.ext().reserve_balance.has_violation(),
         reverted_for_reserve_balance,
+        halt_reason: reverted_for_reserve_balance
+            .then_some(MonadHaltReason::ReserveBalanceViolation),
     };
     Ok(result)
 }

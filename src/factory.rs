@@ -1,8 +1,8 @@
 //! Construction of Monad EVM instances.
 
 use crate::{
-    MonadBlockEnv, MonadEvm, MonadHardfork, MonadLimits, monad_precompiles,
-    transaction::tx_registry,
+    MonadBlockEnv, MonadEvm, MonadHardfork, MonadHost, MonadLimits, monad_precompiles,
+    reserve_balance::ReservePrecompiles, transaction::tx_registry,
 };
 use evm2::{ExecutionConfig, evm::DynDatabase};
 
@@ -53,13 +53,13 @@ impl MonadEvmFactory {
     ) -> MonadEvm<'a> {
         let config =
             ExecutionConfig::for_spec_and_version(spec, self.limits.version(spec, self.chain_id));
-        MonadEvm::new_with_execution_config(
+        MonadEvm::new(MonadHost::new_with_execution_config(
             config,
             spec,
             block,
             tx_registry(),
             db,
-            monad_precompiles(spec),
-        )
+            ReservePrecompiles(monad_precompiles(spec)),
+        ))
     }
 }

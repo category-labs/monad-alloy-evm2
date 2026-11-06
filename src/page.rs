@@ -8,7 +8,7 @@
 //!
 //! [MIP-8]: https://mips.monad.xyz/MIPs/MIP-8
 
-use crate::MonadEvm;
+use crate::MonadHost;
 use alloy_primitives::{Address, U256, keccak256};
 
 /// Number of low storage-key bits used as an offset within a page.
@@ -70,7 +70,7 @@ pub(crate) struct PageAccess {
 }
 
 impl PageAccess {
-    pub(crate) fn load(evm: &mut MonadEvm<'_>, key: StoragePageKey) -> Self {
+    pub(crate) fn load(evm: &mut MonadHost<'_>, key: StoragePageKey) -> Self {
         let slot = key.tracker_slot();
         let encoded = evm.state_mut().tload(&TRACKER_ADDRESS, &slot).as_limbs()[0];
         Self {
@@ -86,12 +86,17 @@ impl PageAccess {
         !self.accessed
     }
 
-    pub(crate) fn record_read(&mut self, evm: &mut MonadEvm<'_>) {
+    pub(crate) fn record_read(&mut self, evm: &mut MonadHost<'_>) {
         self.accessed = true;
         self.store(evm);
     }
 
-    pub(crate) fn record_write(&mut self, evm: &mut MonadEvm<'_>, present: U256, new: U256) -> u64 {
+    pub(crate) fn record_write(
+        &mut self,
+        evm: &mut MonadHost<'_>,
+        present: U256,
+        new: U256,
+    ) -> u64 {
         let mut gas = BASE_COST;
         self.accessed = true;
         if present != new && !self.written {
@@ -108,7 +113,7 @@ impl PageAccess {
         gas
     }
 
-    fn store(&self, evm: &mut MonadEvm<'_>) {
+    fn store(&self, evm: &mut MonadHost<'_>) {
         let encoded = u64::from(self.accessed)
             | (u64::from(self.written) << 1)
             | (u64::from(self.current_growth as u16) << 16)

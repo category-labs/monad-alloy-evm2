@@ -7,8 +7,10 @@ use evm2::{
     env::BlockEnv, ethereum::TxEnvelope,
 };
 
-/// An evm2 instance that retains its active Monad hardfork.
-pub type MonadEvm<'a> = Evm<'a, MonadEvmTypes>;
+/// The native host used by Monad instructions, precompiles and inspectors.
+///
+/// Use [`crate::MonadEvm`] to execute transactions with Monad lifecycle handling.
+pub type MonadHost<'a> = Evm<'a, MonadEvmTypes>;
 
 /// Block inputs visible to a Monad EVM.
 pub type MonadBlockEnv = BlockEnv<MonadEvmTypes>;
@@ -26,11 +28,11 @@ impl EvmTypesHost for MonadEvmTypes {
     type Tx = MonadTxEnvelope;
     type EvmExt = MonadEvmExt;
     type MessageExt = ();
-    type MessageResultExt = ();
+    type MessageResultExt = MonadMessageResultExt;
     type TxEnvExt = ();
     type TxResultExt = MonadTxResultExt;
     type BlockEnvExt = ();
-    type Host<'a> = MonadEvm<'a>;
+    type Host<'a> = MonadHost<'a>;
 }
 
 /// Monad execution state shared by active call frames.
@@ -40,11 +42,14 @@ pub struct MonadEvmExt {
     pub chain: MonadChainContext,
     /// Reserve-balance state for the executing transaction.
     pub reserve_balance: ReserveBalanceTracker,
-    /// Revert successful execution that violates reserve-balance rules.
+    /// Preserve an enclosing transaction's reserve tracker across synthetic calls.
     ///
-    /// Disabled by default, matching monad-revm's caller-controlled enforcement.
-    pub revert_on_reserve_balance_violation: bool,
+    /// Only internal-call simulations may set this. An initialized tracker is required.
+    /// Enforcement is deferred to the enclosing transaction, which must check its
+    /// reserves before accepting execution. Restore `false` for ordinary transactions.
+    pub preserve_reserve_balance_tracker: bool,
     pub(crate) reserve_balance_sync: ReserveBalanceSync,
+    pub(crate) reserve_execution: crate::reserve_balance::ReserveExecution,
     pub(crate) memory_pool_offset: u64,
 }
 
@@ -53,8 +58,27 @@ pub struct MonadEvmExt {
 pub struct MonadTxResultExt {
     /// Whether the final transaction state violates reserve-balance rules.
     pub dipped_into_reserve: bool,
-    /// Whether reserve-balance enforcement reverted otherwise successful execution.
+    /// Whether reserve-balance enforcement rejected execution.
     pub reverted_for_reserve_balance: bool,
+    /// Monad-specific failure, separate from an EVM `REVERT`.
+    pub halt_reason: Option<MonadHaltReason>,
+}
+
+/// Monad protocol failures that do not have a native evm2 instruction stop code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonadHaltReason {
+    /// Execution left an account below its required reserve balance.
+    ReserveBalanceViolation,
+}
+
+/// Protocol outcome visible to root call/create inspectors.
+///
+/// evm2 uses `InstrStop::Revert` internally to retain unused CALL gas. Consumers
+/// must consult this extension to distinguish reserve rejection from EVM `REVERT`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonadMessageResultExt {
+    /// Monad-specific failure, if the root execution was rejected.
+    pub halt_reason: Option<MonadHaltReason>,
 }
 
 impl MonadEvmExt {
