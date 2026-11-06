@@ -48,3 +48,11 @@ pub use spec::{
 
 mod transaction;
 pub use transaction::{SYSTEM_ADDRESS, SystemSenderIsAuthority};
+
+pub mod system;
+pub use system::{
+    StakingSystemCallError, apply_epoch_boundary, apply_syscall_on_epoch_change,
+    apply_syscall_reward, apply_syscall_snapshot, staking_system_tx,
+    syscall_on_epoch_change_calldata, syscall_on_epoch_change_tx, syscall_reward_calldata,
+    syscall_reward_tx, syscall_snapshot_calldata, syscall_snapshot_tx,
+};

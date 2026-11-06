@@ -49,7 +49,7 @@ alloy_sol_types::sol! {
 
         // Syscalls
         function syscallOnEpochChange(uint64 epoch) external;
-        function syscallReward(address blockAuthor) external;
+        function syscallReward(address blockAuthor) external payable;
         function syscallSnapshot() external;
 
         // Events

@@ -4,7 +4,7 @@ mod common;
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_monad_evm2::{
-    MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
+    MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope, SYSTEM_ADDRESS,
     staking::{
         STAKING_ADDRESS,
         abi::gas,
@@ -12,10 +12,12 @@ use alloy_monad_evm2::{
         interface::IMonadStaking::*,
         storage::{
             accumulator_key, consensus_view_key, delegator_key, delegator_offsets, global_slots,
-            snapshot_view_key, validator_key, validator_offsets, valset_slots, withdrawal_key,
-            withdrawal_offsets,
+            snapshot_view_key, val_id_secp_key, validator_key, validator_offsets, valset_slots,
+            withdrawal_key, withdrawal_offsets,
         },
     },
+    staking_system_tx, syscall_on_epoch_change_calldata, syscall_reward_calldata,
+    syscall_snapshot_calldata,
 };
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::SolCall;
@@ -24,12 +26,185 @@ use evm2::{AccountInfo, TxResult, evm::InMemoryDB, interpreter::InstrStop};
 use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
 use revm::{
     DatabaseCommit, ExecuteEvm, context::TxEnv, context_interface::result::ExecutionResult,
-    database::InMemoryDB as ReferenceDB, state::AccountInfo as ReferenceAccount,
+    database::InMemoryDB as ReferenceDB, handler::SystemCallEvm,
+    state::AccountInfo as ReferenceAccount,
 };
 use std::collections::BTreeMap;
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const VALIDATOR: u64 = 7;
+
+const AUTHOR: Address = Address::repeat_byte(0x55);
+
+fn system_prestate() -> Vec<(U256, U256)> {
+    let mut slots = prestate();
+    slots.extend([
+        (val_id_secp_key(&AUTHOR), U256::from(VALIDATOR) << 192),
+        (valset_slots::EXECUTION, U256::ONE << 192),
+        (valset_slots::EXECUTION + U256::ONE, U256::from(VALIDATOR) << 192),
+        (valset_slots::CONSENSUS, U256::ONE << 192),
+        (valset_slots::CONSENSUS + U256::ONE, U256::from(VALIDATOR) << 192),
+        (consensus_view_key(VALIDATOR, 0), MON * U256::from(100)),
+        (consensus_view_key(VALIDATOR, 1), MON / U256::from(10)),
+        (validator_key(VALIDATOR, validator_offsets::COMMISSION), MON / U256::from(5)),
+        (accumulator_key(3, VALIDATOR, 1), U256::ONE << 192),
+    ]);
+    slots
+}
+
+#[test]
+fn system_rewards_and_epoch_transitions_match_release() {
+    for spec in MonadHardfork::ALL {
+        let reward = call(syscall_reward_calldata(AUTHOR, MON * U256::from(10)));
+        let results = assert_calls_as(
+            spec,
+            &system_prestate(),
+            &[
+                reward.clone(),
+                call(syscall_snapshot_calldata()),
+                reward.clone(),
+                call(syscall_on_epoch_change_calldata(3)),
+                reward,
+                call(getValidatorCall { validatorId: VALIDATOR }.abi_encode()),
+                call(getDelegatorCall { validatorId: VALIDATOR, delegator: SENDER }.abi_encode()),
+                call(getEpochCall {}.abi_encode()),
+                call(getProposerValIdCall {}.abi_encode()),
+            ],
+            SYSTEM_ADDRESS,
+            true,
+        );
+        assert!(results.iter().all(|r| r.is_success()));
+        assert_eq!(results[0].total_gas_spent, gas::SYSCALL_REWARD);
+        assert_eq!(results[1].total_gas_spent, gas::SYSCALL_SNAPSHOT);
+        assert_eq!(results[3].total_gas_spent, gas::SYSCALL_ON_EPOCH_CHANGE);
+        let validator = getValidatorCall::abi_decode_returns(&results[5].output).unwrap();
+        assert_eq!(validator.unclaimedRewards, MON * U256::from(26));
+        let delegator = getDelegatorCall::abi_decode_returns(&results[6].output).unwrap();
+        assert_eq!(delegator.unclaimedRewards, MON * U256::from(4));
+        let epoch = getEpochCall::abi_decode_returns(&results[7].output).unwrap();
+        assert_eq!(epoch.epoch, 3);
+        assert!(!epoch.inEpochDelayPeriod);
+        assert_eq!(
+            getProposerValIdCall::abi_decode_returns(&results[8].output).unwrap(),
+            VALIDATOR
+        );
+    }
+}
+
+#[test]
+fn system_operations_require_the_reserved_sender_and_reject_invalid_transitions() {
+    for spec in MonadHardfork::ALL {
+        let operations = [
+            call(syscall_reward_calldata(AUTHOR, MON)),
+            call(syscall_snapshot_calldata()),
+            call(syscall_on_epoch_change_calldata(3)),
+        ];
+        assert!(
+            assert_calls_as(spec, &system_prestate(), &operations, SENDER, true)
+                .iter()
+                .all(|r| !r.is_success())
+        );
+        let results = assert_calls_as(
+            spec,
+            &system_prestate(),
+            &[
+                call(syscall_reward_calldata(Address::ZERO, MON)),
+                call(syscall_on_epoch_change_calldata(2)),
+                call(syscall_snapshot_calldata()),
+                call(syscall_snapshot_calldata()),
+                call(syscall_on_epoch_change_calldata(10)),
+            ],
+            SYSTEM_ADDRESS,
+            true,
+        );
+        assert_eq!(
+            results.iter().map(|r| r.is_success()).collect::<Vec<_>>(),
+            vec![false, false, true, false, true]
+        );
+    }
+}
+
+#[test]
+fn normal_system_sender_calls_can_supply_reward_value() {
+    for spec in MonadHardfork::ALL {
+        let results = assert_calls_as(
+            spec,
+            &system_prestate(),
+            &[
+                payable(
+                    syscallRewardCall { blockAuthor: AUTHOR }.abi_encode(),
+                    MON * U256::from(10),
+                ),
+                payable(syscallSnapshotCall {}.abi_encode(), MON),
+                payable(syscallOnEpochChangeCall { epoch: 3 }.abi_encode(), MON),
+            ],
+            SYSTEM_ADDRESS,
+            false,
+        );
+        assert!(results[0].is_success());
+        assert!(!results[1].is_success());
+        assert!(!results[2].is_success());
+    }
+}
+
+#[test]
+fn snapshot_ranks_top_two_hundred_and_removes_ineligible_validators() {
+    let mut slots = system_prestate();
+    slots.push((valset_slots::EXECUTION, U256::from(207) << 192));
+    for id in 1..=207u64 {
+        let mut flags = [0u8; 32];
+        flags[..20].copy_from_slice(SENDER.as_slice());
+        flags[20..28].copy_from_slice(&u64::from(id > 205).to_be_bytes());
+        slots.extend([
+            (valset_slots::EXECUTION + U256::from(id), U256::from(id) << 192),
+            (validator_key(id, validator_offsets::ADDRESS_FLAGS), U256::from_be_bytes(flags)),
+            (
+                validator_key(id, validator_offsets::STAKE),
+                MON * U256::from(if id % 2 == 0 { 2 } else { 1 }),
+            ),
+        ]);
+    }
+    for spec in MonadHardfork::ALL {
+        let results = assert_calls_as(
+            spec,
+            &slots,
+            &[
+                call(syscall_snapshot_calldata()),
+                call(getConsensusValidatorSetCall { startIndex: 0 }.abi_encode()),
+                call(getConsensusValidatorSetCall { startIndex: 100 }.abi_encode()),
+                call(getConsensusValidatorSetCall { startIndex: 200 }.abi_encode()),
+                call(getExecutionValidatorSetCall { startIndex: 200 }.abi_encode()),
+            ],
+            SYSTEM_ADDRESS,
+            true,
+        );
+        assert!(results.iter().all(|r| r.is_success()));
+        let mut actual =
+            getConsensusValidatorSetCall::abi_decode_returns(&results[1].output).unwrap().valIds;
+        actual.extend(
+            getConsensusValidatorSetCall::abi_decode_returns(&results[2].output).unwrap().valIds,
+        );
+        let expected = (1..=205u64)
+            .filter(|id| id % 2 == 0)
+            .chain((1..=205u64).filter(|id| id % 2 == 1))
+            .take(200)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(
+            getConsensusValidatorSetCall::abi_decode_returns(&results[3].output)
+                .unwrap()
+                .valIds
+                .is_empty()
+        );
+        assert_eq!(
+            getExecutionValidatorSetCall::abi_decode_returns(&results[4].output)
+                .unwrap()
+                .valIds
+                .len(),
+            5
+        );
+    }
+}
 
 fn registration(stake: U256, commission: U256) -> Vec<u8> {
     let mut payload = vec![2; 33];
@@ -372,10 +547,20 @@ fn assert_calls(
     slots: &[(U256, U256)],
     calls: &[Call],
 ) -> Vec<TxResult<MonadEvmTypes>> {
+    assert_calls_as(spec, slots, calls, SENDER, false)
+}
+
+fn assert_calls_as(
+    spec: MonadHardfork,
+    slots: &[(U256, U256)],
+    calls: &[Call],
+    caller: Address,
+    system: bool,
+) -> Vec<TxResult<MonadEvmTypes>> {
     let reference_spec = FORKS.iter().find(|(fork, _)| *fork == spec).unwrap().1;
     let mut db = InMemoryDB::default();
     let mut reference_db = ReferenceDB::default();
-    for address in [SENDER, STAKING_ADDRESS] {
+    for address in [SENDER, STAKING_ADDRESS, SYSTEM_ADDRESS] {
         let balance = MON * U256::from(1_000_000_000u64);
         db.insert_account_info(&address, AccountInfo::default().with_balance(balance));
         reference_db
@@ -400,23 +585,33 @@ fn assert_calls(
             gas_limit: call.gas_limit,
             ..Default::default()
         };
-        let expected = reference
-            .transact(
-                TxEnv::builder()
-                    .caller(SENDER)
-                    .kind(tx.to)
-                    .value(tx.value)
-                    .data(tx.input.clone())
-                    .gas_limit(tx.gas_limit)
-                    .gas_price(0)
-                    .nonce(tx.nonce)
-                    .chain_id(Some(1))
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
-        let tx = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), SENDER);
-        let pending = evm.transact(&tx).unwrap();
+        let expected = if system {
+            assert_eq!(call.value, U256::ZERO);
+            reference.system_call_with_caller(caller, STAKING_ADDRESS, call.input.clone()).unwrap()
+        } else {
+            reference
+                .transact(
+                    TxEnv::builder()
+                        .caller(caller)
+                        .kind(tx.to)
+                        .value(tx.value)
+                        .data(tx.input.clone())
+                        .gas_limit(tx.gas_limit)
+                        .gas_price(0)
+                        .nonce(tx.nonce)
+                        .chain_id(Some(1))
+                        .build()
+                        .unwrap(),
+                )
+                .unwrap()
+        };
+        let tx = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), caller);
+        let pending = if system {
+            evm.system_call(staking_system_tx(call.input.clone()).with_caller(caller))
+        } else {
+            evm.transact(&tx)
+        }
+        .unwrap();
         let actual_slots = pending
             .account_changes()
             .flat_map(|account| {
@@ -452,11 +647,13 @@ fn assert_calls(
             expected.result.output().map_or(&[][..], |b| b.as_ref()),
             "{spec} call {nonce}"
         );
-        assert_eq!(
-            result.total_gas_spent,
-            expected.result.gas().total_gas_spent(),
-            "{spec} call {nonce}"
-        );
+        if !system {
+            assert_eq!(
+                result.total_gas_spent,
+                expected.result.gas().total_gas_spent(),
+                "{spec} call {nonce}"
+            );
+        }
         assert_eq!(&result.logs, expected.result.logs(), "{spec} call {nonce}");
         for (address, account) in &expected.state {
             let actual =

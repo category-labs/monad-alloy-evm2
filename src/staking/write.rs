@@ -4,8 +4,9 @@ use super::{
     StorageReader,
     abi::gas,
     constants::{
-        ACTIVE_VALIDATOR_STAKE, DUST_THRESHOLD, MAX_COMMISSION, MAX_EXTERNAL_REWARD,
-        MIN_AUTH_ADDRESS_STAKE, MIN_EXTERNAL_REWARD, UNIT_BIAS, WITHDRAWAL_DELAY,
+        ACTIVE_VALIDATOR_STAKE, ACTIVE_VALSET_SIZE, DUST_THRESHOLD, MAX_COMMISSION,
+        MAX_EXTERNAL_REWARD, MIN_AUTH_ADDRESS_STAKE, MIN_EXTERNAL_REWARD, MON, SYSTEM_ADDRESS,
+        UNIT_BIAS, WITHDRAWAL_DELAY,
     },
     interface::IMonadStaking::*,
     result::InterpreterResult,
@@ -20,6 +21,9 @@ use alloc::{format, vec, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use evm2::precompiles::PrecompileHalt;
+
+#[cfg(test)]
+mod tests;
 
 /// Extended storage trait for state-mutating staking operations.
 ///
@@ -1389,11 +1393,339 @@ pub fn handle_add_validator<S: StakingStorage>(
     Ok((gas::ADD_VALIDATOR, encoded.into()))
 }
 
+/// Remove a validator from the execution valset bitset.
+fn remove_from_valset<S: StakingStorage>(s: &mut S, val_id: u64) -> Result<(), PrecompileHalt> {
+    let bucket_key = bitset_bucket_key(val_id);
+    let set = read_u256(s, bucket_key)?;
+    let bit = (val_id & 0xFF) as usize;
+    let mask = !(U256::from(1u64) << bit);
+    let new_set = set & mask;
+    write_storage_u256(s, bucket_key, new_set)
+}
+
+/// Handle syscallReward(address) — distribute block rewards.
+///
+/// The block reward amount is resolved from two sources (in priority order):
+/// 1. **Extended calldata**: If `input` is >= 68 bytes, the reward is read from bytes `[36..68]`
+///    (appended after the standard ABI data). This is used by
+///    [`crate::system::syscall_reward_calldata`] for system-call integration.
+/// 2. **`msg.value`** (`call_value`): Fallback for direct calls (e.g., Foundry
+///    `vm.prank(SYSTEM_ADDRESS)` with `{value: reward}`).
+pub fn handle_syscall_reward<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+    call_value: U256,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::SYSCALL_REWARD {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+    if *caller != SYSTEM_ADDRESS {
+        return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
+    }
+
+    let call = syscallRewardCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let block_author = call.blockAuthor;
+
+    // Resolve block reward: extended calldata (36..68) takes priority over msg.value
+    // Standard ABI: 4 (selector) + 32 (address) = 36 bytes
+    // Extended:     4 (selector) + 32 (address) + 32 (reward) = 68 bytes
+    let block_reward =
+        if input.len() >= 68 { U256::from_be_slice(&input[36..68]) } else { call_value };
+
+    // Look up validator from block author address
+    let val_id = read_u64(s, val_id_secp_key(&block_author))?;
+    if val_id == 0 {
+        // Unknown author — return NotInValidatorSet error
+        return Err(PrecompileHalt::Other("not in validator set".into()));
+    }
+
+    // Get active stake from the appropriate view
+    let in_boundary = read_in_boundary(s)?;
+    let view_key =
+        if in_boundary { snapshot_view_key(val_id, 0) } else { consensus_view_key(val_id, 0) };
+    let active_stake = read_u256(s, view_key)?;
+    if active_stake.is_zero() {
+        // Zero active stake — return NotInValidatorSet error
+        return Err(PrecompileHalt::Other("not in validator set".into()));
+    }
+
+    // Funding is supplied by the block executor or a normal call's value transfer.
+
+    // Get commission rate
+    let commission_view_key =
+        if in_boundary { snapshot_view_key(val_id, 1) } else { consensus_view_key(val_id, 1) };
+    let commission_rate = read_u256(s, commission_view_key)?;
+
+    // Calculate commission: commission_amount = (block_reward * commission_rate) / MON
+    let commission_amount = checked_mul_div_u256(block_reward, commission_rate, MON)?;
+    let del_reward = checked_sub_u256(block_reward, commission_amount)?;
+
+    // Credit commission to auth address delegator rewards
+    let val = read_validator(s, val_id)?;
+    let auth_addr = val.auth_address;
+    let mut auth_del = read_delegator(s, val_id, &auth_addr)?;
+    auth_del.rewards = checked_add_u256(auth_del.rewards, commission_amount)?;
+    write_delegator(s, val_id, &auth_addr, &auth_del)?;
+
+    // Add del_reward (not block_reward) to unclaimed_rewards
+    write_validator_unclaimed_rewards(
+        s,
+        val_id,
+        checked_add_u256(val.unclaimed_rewards, del_reward)?,
+    )?;
+
+    // Apply reward to accumulator: acc += (del_reward * UNIT_BIAS) / active_stake
+    if !del_reward.is_zero() && !active_stake.is_zero() {
+        let reward_acc = checked_mul_div_u256(del_reward, UNIT_BIAS, active_stake)?;
+        let new_acc = checked_add_u256(val.accumulated_reward_per_token, reward_acc)?;
+        write_validator_acc(s, val_id, new_acc)?;
+    }
+
+    // Write proposer_val_id
+    write_storage_u64(s, global_slots::PROPOSER_VAL_ID, val_id)?;
+
+    // Emit ValidatorRewarded event
+    let epoch = read_epoch(s)?;
+    let topics = vec![
+        ValidatorRewarded::SIGNATURE_HASH,
+        B256::from(U256::from(val_id)),
+        B256::from(U256::from_be_slice(SYSTEM_ADDRESS.as_slice())),
+    ];
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&del_reward.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    Ok((gas::SYSCALL_REWARD, Bytes::new()))
+}
+
+/// Handle syscallSnapshot() — take epoch boundary snapshot.
+pub fn handle_syscall_snapshot<S: StakingStorage>(
+    s: &mut S,
+    _input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::SYSCALL_SNAPSHOT {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+    if *caller != SYSTEM_ADDRESS {
+        return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
+    }
+
+    // Check not already in boundary
+    let in_boundary = read_in_boundary(s)?;
+    if in_boundary {
+        return Err(PrecompileHalt::Other("called snapshot while in boundary".into()));
+    }
+
+    // Set in_epoch_delay_period = true (left-aligned bool: byte 0 = 1)
+    let mut boundary_true = [0u8; 32];
+    boundary_true[0] = 1;
+    write_storage_u256(s, global_slots::IN_BOUNDARY, U256::from_be_bytes(boundary_true))?;
+
+    // Read consensus set for snapshot
+    let consensus_len = read_u64(s, valset_slots::CONSENSUS)?;
+
+    // 1. Clear old snapshot set: pop each entry and clear its view slots
+    let old_snapshot_len = read_u64(s, valset_slots::SNAPSHOT)?;
+    for i in 0..old_snapshot_len {
+        let old_val_id = read_u64(s, valset_slots::SNAPSHOT + U256::from(1 + i))?;
+        write_storage_u256(s, snapshot_view_key(old_val_id, 0), U256::ZERO)?;
+        write_storage_u256(s, snapshot_view_key(old_val_id, 1), U256::ZERO)?;
+        write_storage_u64(s, valset_slots::SNAPSHOT + U256::from(1 + i), 0)?;
+    }
+
+    // 2. Copy consensus → snapshot (both array and view)
+    write_storage_u64(s, valset_slots::SNAPSHOT, consensus_len)?;
+    for i in 0..consensus_len {
+        let val_id = read_u64(s, valset_slots::CONSENSUS + U256::from(1 + i))?;
+        write_storage_u64(s, valset_slots::SNAPSHOT + U256::from(1 + i), val_id)?;
+
+        // Copy consensus view → snapshot view
+        let c_stake = read_u256(s, consensus_view_key(val_id, 0))?;
+        let c_commission = read_u256(s, consensus_view_key(val_id, 1))?;
+        write_storage_u256(s, snapshot_view_key(val_id, 0), c_stake)?;
+        write_storage_u256(s, snapshot_view_key(val_id, 1), c_commission)?;
+    }
+
+    // 3. Clear old consensus set: pop each entry and clear its view slots
+    for i in 0..consensus_len {
+        let old_val_id = read_u64(s, valset_slots::CONSENSUS + U256::from(1 + i))?;
+        write_storage_u256(s, consensus_view_key(old_val_id, 0), U256::ZERO)?;
+        write_storage_u256(s, consensus_view_key(old_val_id, 1), U256::ZERO)?;
+        write_storage_u64(s, valset_slots::CONSENSUS + U256::from(1 + i), 0)?;
+    }
+
+    // 4. Build new consensus set from execution set (top N by stake)
+    let exec_len = read_u64(s, valset_slots::EXECUTION)?;
+    let mut validators: Vec<(u64, U256)> = Vec::with_capacity(exec_len as usize);
+    for i in 0..exec_len {
+        let val_id = read_u64(s, valset_slots::EXECUTION + U256::from(1 + i))?;
+        let stake = read_u256(s, validator_key(val_id, validator_offsets::STAKE))?;
+        // Only include validators with OK flags
+        let addr_flags = read_u256(s, validator_key(val_id, validator_offsets::ADDRESS_FLAGS))?
+            .to_be_bytes::<32>();
+        let flags = u64::from_be_bytes(addr_flags[20..28].try_into().unwrap());
+        if flags == validator_flags::OK {
+            validators.push((val_id, stake));
+        }
+    }
+
+    // Sort by stake descending, then val_id ascending as tie-breaker
+    validators.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Take top ACTIVE_VALSET_SIZE
+    let new_consensus_len = validators.len().min(ACTIVE_VALSET_SIZE as usize);
+
+    // 5. Write new consensus set with view
+    write_storage_u64(s, valset_slots::CONSENSUS, new_consensus_len as u64)?;
+    for (i, (val_id, _)) in validators.iter().take(new_consensus_len).enumerate() {
+        write_storage_u64(s, valset_slots::CONSENSUS + U256::from(1 + i as u64), *val_id)?;
+        // Write consensus view
+        let val = read_validator(s, *val_id)?;
+        write_storage_u256(s, consensus_view_key(*val_id, 0), val.stake)?;
+        write_storage_u256(s, consensus_view_key(*val_id, 1), val.commission)?;
+    }
+
+    // Compact execution set: remove non-OK validators using pop-and-swap.
+    // Re-read exec_len since we need the current value.
+    let exec_len = read_u64(s, valset_slots::EXECUTION)?;
+    let mut removals: Vec<u64> = Vec::new();
+    for i in 0..exec_len {
+        let vid = read_u64(s, valset_slots::EXECUTION + U256::from(1 + i))?;
+        let addr_flags =
+            read_u256(s, validator_key(vid, validator_offsets::ADDRESS_FLAGS))?.to_be_bytes::<32>();
+        let flags = u64::from_be_bytes(addr_flags[20..28].try_into().unwrap());
+        if flags != validator_flags::OK {
+            removals.push(i);
+        }
+    }
+    let mut current_len = exec_len;
+    for &idx in removals.iter().rev() {
+        let removed_vid = read_u64(s, valset_slots::EXECUTION + U256::from(1 + idx))?;
+        remove_from_valset(s, removed_vid)?;
+        current_len -= 1;
+        if idx < current_len {
+            let last_vid = read_u64(s, valset_slots::EXECUTION + U256::from(1 + current_len))?;
+            write_storage_u64(s, valset_slots::EXECUTION + U256::from(1 + idx), last_vid)?;
+        }
+        write_storage_u64(s, valset_slots::EXECUTION + U256::from(1 + current_len), 0)?;
+    }
+    write_storage_u64(s, valset_slots::EXECUTION, current_len)?;
+
+    Ok((gas::SYSCALL_SNAPSHOT, Bytes::new()))
+}
+
+/// Handle syscallOnEpochChange(uint64) — finalize epoch transition.
+pub fn handle_syscall_on_epoch_change<S: StakingStorage>(
+    s: &mut S,
+    input: &[u8],
+    gas_limit: u64,
+    caller: &Address,
+) -> Result<(u64, Bytes), PrecompileHalt> {
+    if gas_limit < gas::SYSCALL_ON_EPOCH_CHANGE {
+        return Err(PrecompileHalt::OutOfGas);
+    }
+    if *caller != SYSTEM_ADDRESS {
+        return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
+    }
+
+    let call = syscallOnEpochChangeCall::abi_decode_raw(&input[4..])
+        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+
+    let current_epoch = read_epoch(s)?;
+    // Allow any strictly increasing epoch (next > last), not just +1
+    if call.epoch <= current_epoch {
+        return Err(PrecompileHalt::Other("invalid epoch change".into()));
+    }
+
+    let next_epoch = call.epoch;
+    // C++ uses unsigned arithmetic for the look-ahead epoch.
+    let next_next_epoch = next_epoch.wrapping_add(1);
+
+    // Emit EpochChanged event before state changes
+    let topics = vec![EpochChanged::SIGNATURE_HASH];
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&U256::from(current_epoch).to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(next_epoch).to_be_bytes::<32>());
+    emit_event(s, topics, data)?;
+
+    // Update accumulator values for snapshot validators.
+    // For each validator in the snapshot set, update existing accumulator entries
+    // for next_epoch and next_epoch+1 to the current validator acc value.
+    // This ensures delta_stake activations use the accumulator at epoch transition,
+    // not the stale value from delegation time.
+    let snapshot_len = read_u64(s, valset_slots::SNAPSHOT)?;
+    for i in 0..snapshot_len {
+        let val_slot = valset_slots::SNAPSHOT.saturating_add(U256::from(i + 1));
+        let val_id = read_u64(s, val_slot)?;
+        let current_val_acc =
+            read_u256(s, validator_key(val_id, validator_offsets::ACCUMULATED_REWARD_PER_TOKEN))?;
+
+        // Update accumulator for next_epoch if it has refcount > 0
+        let acc_next = read_accumulator(s, next_epoch, val_id)?;
+        if acc_next.refcount > 0 {
+            write_accumulator(
+                s,
+                next_epoch,
+                val_id,
+                &RefCountedAccumulator { value: current_val_acc, refcount: acc_next.refcount },
+            )?;
+        }
+
+        // Update accumulator for next_epoch+1 if it has refcount > 0
+        let acc_next_next = read_accumulator(s, next_next_epoch, val_id)?;
+        if acc_next_next.refcount > 0 {
+            write_accumulator(
+                s,
+                next_next_epoch,
+                val_id,
+                &RefCountedAccumulator { value: current_val_acc, refcount: acc_next_next.refcount },
+            )?;
+        }
+    }
+
+    // Clear in_epoch_delay_period and set new epoch
+    write_storage_u256(s, global_slots::IN_BOUNDARY, U256::ZERO)?;
+    write_storage_u64(s, global_slots::EPOCH, next_epoch)?;
+
+    Ok((gas::SYSCALL_ON_EPOCH_CHANGE, Bytes::new()))
+}
+
+/// Returns whether the method accepts call value, including the reward syscall.
+pub const fn is_payable_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        delegateCall::SELECTOR
+            | addValidatorCall::SELECTOR
+            | externalRewardCall::SELECTOR
+            | syscallRewardCall::SELECTOR
+    )
+}
+
+/// Check if a selector corresponds to a syscall.
+pub const fn is_syscall_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        syscallRewardCall::SELECTOR
+            | syscallSnapshotCall::SELECTOR
+            | syscallOnEpochChangeCall::SELECTOR
+    )
+}
+
 /// Whether the selector needs writable staking storage.
 pub const fn is_write_selector(selector: [u8; 4]) -> bool {
     matches!(
         selector,
         delegateCall::SELECTOR
+            | syscallRewardCall::SELECTOR
+            | syscallSnapshotCall::SELECTOR
+            | syscallOnEpochChangeCall::SELECTOR
             | addValidatorCall::SELECTOR
             | changeCommissionCall::SELECTOR
             | externalRewardCall::SELECTOR
@@ -1421,6 +1753,13 @@ pub fn run_staking_write<S: StakingStorage>(
     };
     let result = match selector {
         delegateCall::SELECTOR => handle_delegate(storage, input, gas_limit, caller, call_value),
+        syscallRewardCall::SELECTOR => {
+            handle_syscall_reward(storage, input, gas_limit, caller, call_value)
+        }
+        syscallSnapshotCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_syscall_snapshot(storage, input, gas_limit, caller)),
+        syscallOnEpochChangeCall::SELECTOR => super::function_not_payable(&call_value)
+            .and_then(|_| handle_syscall_on_epoch_change(storage, input, gas_limit, caller)),
         addValidatorCall::SELECTOR => {
             handle_add_validator(storage, input, gas_limit, caller, call_value)
         }

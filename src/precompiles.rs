@@ -1,4 +1,4 @@
-//! Cryptographic precompiles with Monad gas pricing and fork activation.
+//! Monad cryptographic and protocol precompiles with fork-specific pricing.
 //!
 //! Monad Eight uses Berlin ModExp pricing. Monad Nine and later use Osaka's
 //! EIP-7823 input limits and EIP-7883 pricing. P-256 verification uses EIP-7951
@@ -38,10 +38,12 @@ const POINT_EVALUATION_RETURN_VALUE: [u8; 64] = hex!(
     "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
 );
 
-/// Builds the cryptographic precompile provider for `spec`.
+/// Builds the precompile provider for `spec`.
 ///
 /// Inherits the base fork's implementations, including ModExp and BLS12-381,
 /// replaces the six repriced operations, and enables P-256 at `0x0100`.
+/// Includes staking at `0x1000` on every supported fork and adds the reserve
+/// query at `0x1001` from MonadNine.
 /// The provider also supplies these addresses for transaction prewarming.
 pub fn monad_precompiles(spec: MonadHardfork) -> Precompiles<MonadEvmTypes> {
     let mut precompiles = Precompiles::base(spec.into_eth_spec());
