@@ -39,6 +39,8 @@ pub use precompiles::monad_precompiles;
 pub mod reserve_balance;
 pub use reserve_balance::{ReserveAccount, ReserveBalanceInit};
 
+pub mod staking;
+
 pub mod spec;
 pub use spec::{
     MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadHardfork, UnknownMonadHardfork,

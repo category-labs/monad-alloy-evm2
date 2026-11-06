@@ -5,6 +5,7 @@
 //! pricing on every supported Monad hardfork.
 
 use crate::reserve_balance::{RESERVE_BALANCE_ADDRESS, run_reserve_balance_precompile};
+use crate::staking::{STAKING_ADDRESS, run_staking_precompile};
 use crate::{MonadEvm, MonadEvmTypes, MonadHardfork};
 use alloy_primitives::{Address, Bytes, hex};
 use evm2::{
@@ -56,6 +57,11 @@ pub fn monad_precompiles(spec: MonadHardfork) -> Precompiles<MonadEvmTypes> {
             point_evaluation,
         ),
         P256VERIFY_OSAKA(),
+        Precompile::new(
+            STAKING_ADDRESS,
+            PrecompileId::custom("MonadStaking"),
+            run_staking_precompile,
+        ),
     ]);
     if spec >= MonadHardfork::MonadNine {
         precompiles.as_map_mut().insert(Precompile::new(

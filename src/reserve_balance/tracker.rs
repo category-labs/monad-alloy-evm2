@@ -1,13 +1,11 @@
 //! Reserve-balance state transitions, adapted from monad-revm and evm2-networks.
 
 use super::{ReserveAccount, ReserveBalanceInit};
-use crate::{MonadChainContext, MonadHardfork};
+use crate::{MonadChainContext, MonadHardfork, staking::STAKING_ADDRESS};
 use alloy_primitives::{
-    Address, KECCAK256_EMPTY, U256, address,
+    Address, KECCAK256_EMPTY, U256,
     map::{HashMap, HashSet},
 };
-
-const STAKING_ADDRESS: Address = address!("0000000000000000000000000000000000001000");
 
 /// Cached reserve-balance state for the current transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

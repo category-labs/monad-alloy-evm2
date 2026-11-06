@@ -109,6 +109,7 @@ fn cryptographic_addresses_match_release_and_are_prewarmed() {
         let provider = monad_precompiles(spec);
         let reference = ReferencePrecompiles::new_with_spec(reference_spec);
         let mut all_addresses = expected.clone();
+        all_addresses.insert(address(0x1000));
         if spec >= MonadHardfork::MonadNine {
             all_addresses.insert(address(0x1001));
         }
