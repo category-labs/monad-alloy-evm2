@@ -51,6 +51,7 @@ pub struct MonadEvmExt {
     pub(crate) reserve_balance_sync: ReserveBalanceSync,
     pub(crate) reserve_execution: crate::reserve_balance::ReserveExecution,
     pub(crate) memory_pool_offset: u64,
+    pub(crate) system_call: Option<crate::system::SystemCall>,
 }
 
 /// Reserve-balance outcome attached to a transaction result.

@@ -21,19 +21,46 @@
 //! These are native system calls, not signed transaction envelopes. They leave
 //! sender nonces and fee balances unchanged. Returned gas measures execution
 //! work and must not be added to ordinary transaction receipt or block gas.
+//! The helpers use the inspector installed on [`MonadEvm`]. For a borrowed
+//! inspector, pass the corresponding system transaction to
+//! [`MonadEvm::system_call_with_inspector`].
 
 use crate::{
-    MonadEvmTypes,
+    MonadEvm, MonadEvmTypes, MonadExecutedTx, MonadHost,
     staking::{STAKING_ADDRESS, constants::SYSTEM_ADDRESS, interface::IMonadStaking::*},
 };
+use alloc::sync::Arc;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::SolCall;
+use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
-    Evm, ExecutedTx, TxResult,
+    TxResult,
     evm::{SYSTEM_CALL_GAS_LIMIT, SystemTx},
     interpreter::InstrStop,
     registry::{HandlerError, HandlerResult},
 };
+
+/// Private request routed through evm2's scoped inspector and transaction cleanup.
+#[derive(Clone, Debug)]
+pub(crate) struct SystemCall {
+    tx: SystemTx,
+    dispatched: Arc<AtomicBool>,
+}
+
+impl SystemCall {
+    pub(crate) const fn new(tx: SystemTx, dispatched: Arc<AtomicBool>) -> Self {
+        Self { tx, dispatched }
+    }
+
+    pub(crate) fn execute(
+        self,
+        host: &mut MonadHost<'_>,
+    ) -> HandlerResult<TxResult<MonadEvmTypes>> {
+        self.dispatched.store(true, Ordering::Relaxed);
+        // The handler-level API retains the scoped inspector and native system semantics.
+        host.execute_system_call(self.tx)
+    }
+}
 
 /// Encodes `syscallReward(address blockAuthor)` calldata with the block reward appended.
 ///
@@ -84,25 +111,25 @@ pub fn syscall_on_epoch_change_tx(new_epoch: u64) -> SystemTx {
 /// Should be called once per block. The caller must mint `block_reward` to [`STAKING_ADDRESS`]
 /// beforehand. The returned handle must be resolved by the caller.
 pub fn apply_syscall_reward<'e, 'a>(
-    evm: &'e mut Evm<'a, MonadEvmTypes>,
+    evm: &'e mut MonadEvm<'a>,
     block_author: Address,
     block_reward: U256,
-) -> HandlerResult<ExecutedTx<'e, 'a, MonadEvmTypes>> {
+) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
     evm.system_call(syscall_reward_tx(block_author, block_reward))
 }
 
 /// Applies the epoch snapshot via system call. The returned handle must be resolved by the caller.
 pub fn apply_syscall_snapshot<'e, 'a>(
-    evm: &'e mut Evm<'a, MonadEvmTypes>,
-) -> HandlerResult<ExecutedTx<'e, 'a, MonadEvmTypes>> {
+    evm: &'e mut MonadEvm<'a>,
+) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
     evm.system_call(syscall_snapshot_tx())
 }
 
 /// Applies the epoch change via system call. The returned handle must be resolved by the caller.
 pub fn apply_syscall_on_epoch_change<'e, 'a>(
-    evm: &'e mut Evm<'a, MonadEvmTypes>,
+    evm: &'e mut MonadEvm<'a>,
     new_epoch: u64,
-) -> HandlerResult<ExecutedTx<'e, 'a, MonadEvmTypes>> {
+) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
     evm.system_call(syscall_on_epoch_change_tx(new_epoch))
 }
 
@@ -114,7 +141,7 @@ pub fn apply_syscall_on_epoch_change<'e, 'a>(
 /// if the epoch change fails, the successful snapshot remains committed and the
 /// caller can retry the epoch change or discard the enclosing block.
 pub fn apply_epoch_boundary(
-    evm: &mut Evm<'_, MonadEvmTypes>,
+    evm: &mut MonadEvm<'_>,
     new_epoch: u64,
 ) -> HandlerResult<(TxResult<MonadEvmTypes>, TxResult<MonadEvmTypes>)> {
     let snapshot = commit_successful_syscall(apply_syscall_snapshot(evm)?)?;
@@ -140,7 +167,7 @@ impl core::fmt::Display for StakingSystemCallError {
 impl core::error::Error for StakingSystemCallError {}
 
 fn commit_successful_syscall(
-    executed: ExecutedTx<'_, '_, MonadEvmTypes>,
+    executed: MonadExecutedTx<'_, '_>,
 ) -> HandlerResult<TxResult<MonadEvmTypes>> {
     if executed.result().is_success() {
         Ok(executed.commit())

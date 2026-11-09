@@ -61,8 +61,18 @@ struct PreparedTx {
     intrinsic: u64,
 }
 
-fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
+enum PreparedRequest {
+    Transaction(PreparedTx),
+    System(crate::system::SystemCall),
+}
+
+fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     let host = &mut *req.host;
+    // Only the wrapper can install this private request. System execution bypasses
+    // ordinary admission, nonce updates, fees, authorizations and reserve checks.
+    if let Some(system) = host.ext_mut().system_call.take() {
+        return Ok(PreparedRequest::System(system));
+    }
     end_reserve_balance_tx(host);
     if host.ext().preserve_reserve_balance_tracker && !host.ext().reserve_balance.tracking_enabled()
     {
@@ -124,7 +134,7 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedTx> {
             }
         }
     }
-    Ok(PreparedTx { gas_price, intrinsic })
+    Ok(PreparedRequest::Transaction(PreparedTx { gas_price, intrinsic }))
 }
 
 fn charge_sender(
@@ -148,9 +158,17 @@ fn charge_sender(
     Ok(())
 }
 
-fn execute(req: Request<'_, '_>, prepared: PreparedTx) -> HandlerResult<TxResult<MonadEvmTypes>> {
-    let scope = ReserveScope { host: req.host };
-    execute_inner(scope.host, req.tx.signer(), req.envelope, prepared)
+fn execute(
+    req: Request<'_, '_>,
+    prepared: PreparedRequest,
+) -> HandlerResult<TxResult<MonadEvmTypes>> {
+    match prepared {
+        PreparedRequest::System(system) => system.execute(req.host),
+        PreparedRequest::Transaction(prepared) => {
+            let scope = ReserveScope { host: req.host };
+            execute_inner(scope.host, req.tx.signer(), req.envelope, prepared)
+        }
+    }
 }
 
 struct ReserveScope<'e, 'a> {

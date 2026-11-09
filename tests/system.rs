@@ -1,8 +1,9 @@
 //! Native system-call lifecycle, failure handling and funding.
 
 use alloy_monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadHardfork, SYSTEM_ADDRESS, apply_epoch_boundary,
-    apply_syscall_on_epoch_change, apply_syscall_reward, apply_syscall_snapshot,
+    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
+    apply_epoch_boundary, apply_syscall_on_epoch_change, apply_syscall_reward,
+    apply_syscall_snapshot,
     staking::{
         STAKING_ADDRESS,
         constants::MON,
@@ -10,15 +11,16 @@ use alloy_monad_evm2::{
             consensus_view_key, global_slots, val_id_secp_key, validator_key, validator_offsets,
         },
     },
-    staking_system_tx, syscall_on_epoch_change_calldata,
+    staking_system_tx, syscall_on_epoch_change_calldata, syscall_snapshot_tx,
 };
 use alloy_primitives::{Address, B256, U256};
 use evm2::{
-    AccountInfo,
+    AccountInfo, Inspector,
     bytecode::Bytecode,
     evm::{Database, Db, InMemoryDB},
+    interpreter::{Interpreter, Message, MessageResult},
 };
-use std::io;
+use std::{cell::Cell, io, rc::Rc};
 
 const AUTHOR: Address = Address::repeat_byte(0x55);
 const AUTH: Address = Address::repeat_byte(0x66);
@@ -48,6 +50,33 @@ fn evm() -> MonadEvm<'static> {
 
 fn slot(evm: &mut MonadEvm<'_>, key: U256) -> U256 {
     evm.state_mut().storage_slot_untracked(&STAKING_ADDRESS, &key).unwrap()
+}
+
+struct CallCounter(Rc<Cell<usize>>);
+
+impl Inspector<MonadEvmTypes> for CallCounter {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        message: &mut Message<MonadEvmTypes>,
+    ) -> Option<MessageResult<MonadEvmTypes>> {
+        assert_eq!(message.caller, SYSTEM_ADDRESS);
+        assert_eq!(message.destination, STAKING_ADDRESS);
+        self.0.set(self.0.get() + 1);
+        None
+    }
+}
+
+#[test]
+fn block_lifecycle_helpers_use_the_installed_inspector() {
+    let calls = Rc::new(Cell::new(0));
+    let mut evm = evm();
+    evm.set_inspector(CallCounter(calls.clone()));
+    assert!(apply_syscall_reward(&mut evm, AUTHOR, MON).unwrap().commit().is_success());
+    let (snapshot, change) = apply_epoch_boundary(&mut evm, 3).unwrap();
+    assert!(snapshot.is_success() && change.is_success());
+    assert_eq!(calls.get(), 3);
+    assert!(evm.inspector().is_some());
 }
 
 #[test]
@@ -137,6 +166,25 @@ fn database_failure_aborts_instead_of_reverting_and_clears_prior_writes() {
     assert_eq!(slot(&mut evm, global_slots::IN_BOUNDARY), U256::ZERO);
     assert!(!evm.ext().reserve_balance.tracking_enabled());
     assert!(apply_syscall_snapshot(&mut evm).unwrap().commit().is_success());
+}
+
+#[test]
+fn borrowed_inspector_observes_precompile_database_failure_and_retry() {
+    let mut evm = MonadEvmFactory::new(1).create_evm(
+        MonadHardfork::MonadTen,
+        MonadBlockEnv::default(),
+        Db::new(FailingStorageDb { inner: db(), fail: true }),
+    );
+    let mut inspector = CallCounter(Rc::new(Cell::new(0)));
+    let error = evm.system_call_with_inspector(syscall_snapshot_tx(), &mut inspector).unwrap_err();
+    assert!(error.to_string().contains("injected staking storage failure"));
+    assert_eq!(inspector.0.get(), 1);
+    assert_eq!(slot(&mut evm, global_slots::IN_BOUNDARY), U256::ZERO);
+    let result =
+        evm.system_call_with_inspector(syscall_snapshot_tx(), &mut inspector).unwrap().commit();
+    assert!(result.is_success());
+    assert_eq!(inspector.0.get(), 2);
+    assert_ne!(slot(&mut evm, global_slots::IN_BOUNDARY), U256::ZERO);
 }
 
 #[test]

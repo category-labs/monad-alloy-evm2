@@ -14,6 +14,12 @@ native evm2 host. The current adapter observes root instructions to detect reser
 violations before native rollback, so transactions use evm2's inspected interpreter.
 Callers supply block history through `evm.ext_mut().chain`.
 
+`system_call()` uses the installed inspector; `system_call_with_inspector()`
+borrows one for a single call. Staking block-lifecycle helpers also use the
+installed inspector. System calls bypass ordinary transaction validation, fees,
+nonce updates and reserve enforcement, and preserve any enclosing synthetic
+call's reserve context. Their state handles support commit, discard and detach.
+
 Internal-call simulations may set `preserve_reserve_balance_tracker` after
 initializing or copying the enclosing transaction's reserve context. These
 synthetic calls retain its original balance baselines and defer enforcement to

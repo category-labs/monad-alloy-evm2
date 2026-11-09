@@ -2,11 +2,12 @@
 
 use crate::reserve_balance::{ReserveInspector, ReservePrecompiles, end_reserve_balance_tx};
 use crate::{MonadBlockEnv, MonadEvmExt, MonadEvmTypes, MonadHardfork, MonadHost, MonadTxEnvelope};
-use alloc::boxed::Box;
-use alloy_consensus::transaction::Recovered;
+use alloc::{boxed::Box, sync::Arc};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
 use core::{
     fmt,
     ops::{Deref, DerefMut},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use evm2::{
     ExecutionConfig, TxResult,
@@ -14,9 +15,9 @@ use evm2::{
         AccountChanges, BlockStateAccumulator, ExecutedTx, StateChangeSink, StateChangeSource,
         SystemTx, TxResultWithState, TxStateChanges,
     },
-    inspector::Inspector,
+    inspector::{Inspector, NoopInspector},
     precompile::PrecompileProvider,
-    registry::{HandlerResult, TxRegistry},
+    registry::{HandlerError, HandlerResult, TxRegistry},
 };
 
 /// Monad transaction executor with automatic reserve enforcement.
@@ -105,8 +106,28 @@ impl<'a> MonadEvm<'a> {
     }
 
     /// Executes a protocol system call with native system gas and nonce rules.
+    ///
+    /// Uses the installed inspector. System calls bypass ordinary transaction
+    /// validation, fees and reserve enforcement. Monad bookkeeping is isolated
+    /// from any preserved synthetic-call context and restored before returning.
+    /// The execution registry must retain the Monad legacy transaction handler.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
-        self.host.system_call(tx).map(|tx| MonadExecutedTx(Pending::Ordinary(tx)))
+        let inspector =
+            self.inspector.as_mut().map(|inner| &mut **inner as &mut dyn Inspector<MonadEvmTypes>);
+        system_call(&mut self.host, tx, inspector)
+    }
+
+    /// Executes a protocol system call with an inspector borrowed for this call.
+    ///
+    /// The borrowed inspector takes precedence over the installed inspector,
+    /// which is retained for subsequent calls, including after errors or unwinding.
+    /// The inspector borrow ends before the returned state handle is resolved.
+    pub fn system_call_with_inspector(
+        &mut self,
+        tx: SystemTx,
+        inspector: &mut dyn Inspector<MonadEvmTypes>,
+    ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
+        system_call(&mut self.host, tx, Some(inspector))
     }
 
     /// Changes execution configuration while retaining root precompile observation.
@@ -177,6 +198,59 @@ impl<'a> MonadEvm<'a> {
     }
 }
 
+fn system_call<'e, 'a>(
+    host: &'e mut MonadHost<'a>,
+    tx: SystemTx,
+    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
+) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
+    // The pinned engine scopes borrowed inspectors through its transaction
+    // dispatcher. This envelope only selects the handler; the private request
+    // carries the system call and bypasses ordinary transaction preparation.
+    let envelope = Recovered::new_unchecked(
+        MonadTxEnvelope::Legacy(TxLegacy {
+            to: tx.system_contract_address.into(),
+            input: tx.data.clone(),
+            gas_limit: tx.gas_limit,
+            ..Default::default()
+        }),
+        tx.caller,
+    );
+    let dispatched = Arc::new(AtomicBool::new(false));
+    let executed = {
+        let scope = PreservedScope::new(host);
+        let chain = scope.host.ext().chain.clone();
+        *scope.host.ext_mut() = MonadEvmExt {
+            chain,
+            system_call: Some(crate::system::SystemCall::new(tx, dispatched.clone())),
+            ..Default::default()
+        };
+        let mut noop = NoopInspector::default();
+        let pending =
+            scope.host.transact_with_inspector(&envelope, inspector.unwrap_or(&mut noop))?;
+        if !dispatched.load(Ordering::Relaxed) {
+            // A replacement registry must not silently treat this as an ordinary tx.
+            return Err(HandlerError::external(MissingSystemCallHandler));
+        }
+        pending.detach()
+    };
+    Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
+        host,
+        executed: Some(executed),
+        before: None,
+    }))))
+}
+
+#[derive(Debug)]
+struct MissingSystemCallHandler;
+
+impl fmt::Display for MissingSystemCallHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("system calls require the Monad transaction handler")
+    }
+}
+
+impl core::error::Error for MissingSystemCallHandler {}
+
 fn transact<'e, 'a>(
     host: &'e mut MonadHost<'a>,
     tx: &Recovered<MonadTxEnvelope>,
@@ -190,7 +264,7 @@ fn transact<'e, 'a>(
         scope.host.ext_mut().memory_pool_offset = before.memory_pool_offset;
         scope.host.ext_mut().reserve_execution = before.reserve_execution.clone();
         drop(scope);
-        Ok(MonadExecutedTx(Pending::Preserved(Box::new(PreservedPending {
+        Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
             host,
             executed: Some(executed),
             before: Some(before),
@@ -224,16 +298,16 @@ impl Drop for PreservedScope<'_, '_> {
 
 enum Pending<'e, 'a> {
     Ordinary(ExecutedTx<'e, 'a, MonadEvmTypes>),
-    Preserved(Box<PreservedPending<'e, 'a>>),
+    Detached(Box<DetachedPending<'e, 'a>>),
 }
 
-struct PreservedPending<'e, 'a> {
+struct DetachedPending<'e, 'a> {
     host: &'e mut MonadHost<'a>,
     executed: Option<TxResultWithState<MonadEvmTypes>>,
     before: Option<MonadEvmExt>,
 }
 
-impl Drop for PreservedPending<'_, '_> {
+impl Drop for DetachedPending<'_, '_> {
     fn drop(&mut self) {
         if let Some(before) = self.before.take() {
             *self.host.ext_mut() = before;
@@ -245,6 +319,7 @@ impl Drop for PreservedPending<'_, '_> {
 ///
 /// Ordinary transactions retain evm2's borrowed change view. Preserved synthetic
 /// calls detach their state so discarding can also restore the enclosing context.
+/// System calls detach state after restoring their isolated Monad bookkeeping.
 #[must_use = "transaction state must be committed, discarded or detached"]
 pub struct MonadExecutedTx<'e, 'a>(Pending<'e, 'a>);
 
@@ -259,7 +334,7 @@ impl MonadExecutedTx<'_, '_> {
     pub fn result(&self) -> &TxResult<MonadEvmTypes> {
         match &self.0 {
             Pending::Ordinary(tx) => tx.result(),
-            Pending::Preserved(pending) => {
+            Pending::Detached(pending) => {
                 &pending.executed.as_ref().expect("pending execution").result
             }
         }
@@ -269,7 +344,7 @@ impl MonadExecutedTx<'_, '_> {
     pub fn changes(&self) -> TxStateChanges<'_> {
         match &self.0 {
             Pending::Ordinary(tx) => tx.changes(),
-            Pending::Preserved(pending) => {
+            Pending::Detached(pending) => {
                 pending.executed.as_ref().expect("pending execution").pending_state.changes()
             }
         }
@@ -284,7 +359,7 @@ impl MonadExecutedTx<'_, '_> {
     pub fn commit(self) -> TxResult<MonadEvmTypes> {
         match self.0 {
             Pending::Ordinary(tx) => tx.commit(),
-            Pending::Preserved(mut pending) => {
+            Pending::Detached(mut pending) => {
                 let executed = pending.executed.take().expect("pending execution");
                 pending.host.commit_source(&executed.pending_state);
                 pending.before = None;
@@ -312,7 +387,7 @@ impl MonadExecutedTx<'_, '_> {
     pub fn discard(self) -> TxResult<MonadEvmTypes> {
         match self.0 {
             Pending::Ordinary(tx) => tx.discard(),
-            Pending::Preserved(mut pending) => {
+            Pending::Detached(mut pending) => {
                 pending.executed.take().expect("pending execution").result
             }
         }
@@ -333,7 +408,13 @@ impl MonadExecutedTx<'_, '_> {
     pub const fn preserved_context(&self) -> Option<&MonadEvmExt> {
         match &self.0 {
             Pending::Ordinary(_) => None,
-            Pending::Preserved(pending) => Some(pending.host.ext()),
+            Pending::Detached(pending) => {
+                if pending.before.is_some() {
+                    Some(pending.host.ext())
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -345,7 +426,7 @@ impl MonadExecutedTx<'_, '_> {
     pub fn detach(self) -> TxResultWithState<MonadEvmTypes> {
         match self.0 {
             Pending::Ordinary(tx) => tx.detach(),
-            Pending::Preserved(mut pending) => pending.executed.take().expect("pending execution"),
+            Pending::Detached(mut pending) => pending.executed.take().expect("pending execution"),
         }
     }
 }
