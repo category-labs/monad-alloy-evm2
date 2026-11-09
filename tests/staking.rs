@@ -8,21 +8,29 @@ use alloy_monad_evm2::{
     staking::{
         STAKING_ADDRESS,
         abi::gas,
-        constants::{MIN_AUTH_ADDRESS_STAKE, MON, UNIT_BIAS},
+        constants::{
+            ACTIVE_VALIDATOR_STAKE, DUST_THRESHOLD, MIN_AUTH_ADDRESS_STAKE, MON, UNIT_BIAS,
+        },
         interface::IMonadStaking::*,
         storage::{
             accumulator_key, consensus_view_key, delegator_key, delegator_offsets, global_slots,
             snapshot_view_key, val_id_secp_key, validator_key, validator_offsets, valset_slots,
             withdrawal_key, withdrawal_offsets,
         },
+        types::validator_flags,
     },
     staking_system_tx, syscall_on_epoch_change_calldata, syscall_reward_calldata,
     syscall_snapshot_calldata,
 };
-use alloy_primitives::{Address, Bytes, U256};
-use alloy_sol_types::SolCall;
+use alloy_primitives::{Address, Bytes, Log, U256};
+use alloy_sol_types::{SolCall, SolEvent};
 use common::FORKS;
-use evm2::{AccountInfo, TxResult, evm::InMemoryDB, interpreter::InstrStop};
+use evm2::{
+    AccountInfo, TxResult,
+    bytecode::Bytecode,
+    evm::InMemoryDB,
+    interpreter::{InstrStop, op},
+};
 use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
 use revm::{
     DatabaseCommit, ExecuteEvm, context::TxEnv, context_interface::result::ExecutionResult,
@@ -215,8 +223,8 @@ fn registration(stake: U256, commission: U256) -> Vec<u8> {
     // The 0.8.0 compatibility path accepts these without signature verification.
     addValidatorCall {
         payload: payload.into(),
-        signedSecpMessage: Bytes::new(),
-        signedBlsMessage: Bytes::new(),
+        signedSecpMessage: vec![0; 64].into(),
+        signedBlsMessage: vec![0; 96].into(),
     }
     .abi_encode()
 }
@@ -250,15 +258,6 @@ fn validator_registration_matches_release_compatibility_rules() {
             payable(registration(stake, MON), stake - U256::ONE),
             payable(registration(stake - U256::ONE, MON), stake - U256::ONE),
             payable(registration(stake, MON + U256::ONE), stake),
-            payable(
-                addValidatorCall {
-                    payload: Bytes::new(),
-                    signedSecpMessage: Bytes::new(),
-                    signedBlsMessage: Bytes::new(),
-                }
-                .abi_encode(),
-                stake,
-            ),
         ] {
             assert!(!assert_calls(spec, &prestate(), &[invalid])[0].is_success());
         }
@@ -524,10 +523,191 @@ struct Call {
     input: Bytes,
     value: U256,
     gas_limit: u64,
+    /// C++ event order for cases affected by the 0.8.0 delegation-ordering bug.
+    expected_logs: Option<Vec<Log>>,
+}
+
+fn log(event: impl SolEvent) -> Log {
+    Log { address: STAKING_ADDRESS, data: event.encode_log_data() }
+}
+
+#[test]
+fn delegation_and_compounding_emit_cpp_event_order() {
+    let mut flags = [0u8; 32];
+    flags[..20].copy_from_slice(SENDER.as_slice());
+    flags[20..28].copy_from_slice(&validator_flags::STAKE_TOO_LOW.to_be_bytes());
+    let mut slots = prestate();
+    slots.extend([
+        (validator_key(VALIDATOR, validator_offsets::ADDRESS_FLAGS), U256::from_be_bytes(flags)),
+        (validator_key(VALIDATOR, validator_offsets::STAKE), ACTIVE_VALIDATOR_STAKE - MON),
+    ]);
+    let delegation = log(Delegate {
+        validatorId: VALIDATOR,
+        delegator: SENDER,
+        amount: MON,
+        activationEpoch: 3,
+    });
+    let status = log(ValidatorStatusChanged { validatorId: VALIDATOR, flags: 0 });
+    let mut delegate = payable(delegateCall { validatorId: VALIDATOR }.abi_encode(), MON);
+    delegate.expected_logs = Some(vec![delegation.clone(), status.clone()]);
+    let mut compound = call(compoundCall { validatorId: VALIDATOR }.abi_encode());
+    compound.expected_logs = Some(vec![
+        log(ClaimRewards { validatorId: VALIDATOR, delegator: SENDER, amount: MON, epoch: 2 }),
+        delegation,
+        status,
+    ]);
+    for spec in MonadHardfork::ALL {
+        assert!(assert_calls(spec, &slots, &[delegate.clone()])[0].is_success());
+        let mut rewards = slots.clone();
+        rewards.push((delegator_key(VALIDATOR, &SENDER, delegator_offsets::REWARDS), MON));
+        assert!(assert_calls(spec, &rewards, &[compound.clone()])[0].is_success());
+    }
+}
+
+#[test]
+fn registration_emits_created_delegate_then_status() {
+    let mut add = payable(registration(ACTIVE_VALIDATOR_STAKE, MON), ACTIVE_VALIDATOR_STAKE);
+    add.expected_logs = Some(vec![
+        log(ValidatorCreated { validatorId: 1, authAddress: SENDER, commission: MON }),
+        log(Delegate {
+            validatorId: 1,
+            delegator: SENDER,
+            amount: ACTIVE_VALIDATOR_STAKE,
+            activationEpoch: 3,
+        }),
+        log(ValidatorStatusChanged { validatorId: 1, flags: 0 }),
+    ]);
+    for spec in MonadHardfork::ALL {
+        assert!(assert_calls(spec, &prestate(), &[add.clone()])[0].is_success());
+    }
+}
+
+/// Calls staking and returns the success word followed by its return data.
+fn forward_staking(value: U256) -> Bytecode {
+    let mut code = vec![
+        op::CALLDATASIZE,
+        op::PUSH0,
+        op::PUSH0,
+        op::CALLDATACOPY,
+        op::PUSH0,
+        op::PUSH0,
+        op::CALLDATASIZE,
+        op::PUSH0,
+        op::PUSH32,
+    ];
+    code.extend(value.to_be_bytes::<32>());
+    code.push(op::PUSH20);
+    code.extend(STAKING_ADDRESS.as_slice());
+    code.push(op::PUSH4);
+    code.extend(1_000_000u32.to_be_bytes());
+    code.extend([
+        op::CALL,
+        op::PUSH0,
+        op::MSTORE,
+        op::RETURNDATASIZE,
+        op::PUSH0,
+        op::PUSH1,
+        32,
+        op::RETURNDATACOPY,
+        op::RETURNDATASIZE,
+        op::PUSH1,
+        32,
+        op::ADD,
+        op::PUSH0,
+        op::RETURN,
+    ]);
+    Bytecode::new_raw(code.into())
+}
+
+#[test]
+fn failed_delegation_and_compounding_roll_back_early_logs_and_storage() {
+    let contract = Address::repeat_byte(0x77);
+    let balance = MON * U256::from(100);
+    for spec in MonadHardfork::ALL {
+        for nested in [false, true] {
+            for compound in [false, true] {
+                let caller = if nested { contract } else { SENDER };
+                let input = if compound {
+                    compoundCall { validatorId: VALIDATOR }.abi_encode()
+                } else {
+                    delegateCall { validatorId: VALIDATOR }.abi_encode()
+                };
+                let value = if compound { U256::ZERO } else { MON };
+                let mut db = InMemoryDB::default();
+                for address in [SENDER, contract, STAKING_ADDRESS] {
+                    db.insert_account_info(&address, AccountInfo::default().with_balance(balance));
+                }
+                db.insert_account_info(
+                    &contract,
+                    AccountInfo::default().with_balance(balance).with_code(forward_staking(value)),
+                );
+                let mut slots = prestate();
+                slots.push((validator_key(VALIDATOR, validator_offsets::STAKE), U256::MAX));
+                let rewards_key = delegator_key(VALIDATOR, &caller, delegator_offsets::REWARDS);
+                if compound {
+                    slots.push((rewards_key, DUST_THRESHOLD - U256::ONE));
+                }
+                for (key, value) in &slots {
+                    db.insert_account_storage(&STAKING_ADDRESS, key, value);
+                }
+                let mut evm =
+                    MonadEvmFactory::new(1).create_evm(spec, MonadBlockEnv::default(), db);
+                let tx = Recovered::new_unchecked(
+                    MonadTxEnvelope::Legacy(TxLegacy {
+                        to: if nested { contract } else { STAKING_ADDRESS }.into(),
+                        input: input.into(),
+                        value: if nested { U256::ZERO } else { value },
+                        gas_limit: 2_000_000,
+                        ..Default::default()
+                    }),
+                    SENDER,
+                );
+                let pending = evm.transact(&tx).unwrap();
+                for account in pending.account_changes() {
+                    assert!(
+                        account
+                            .storage
+                            .slots
+                            .values()
+                            .all(|slot| slot.value.current == slot.value.original),
+                        "staking changes must roll back even when the caller catches the failure"
+                    );
+                }
+                let result = pending.commit();
+                assert_eq!(result.is_success(), nested, "{spec} {compound}");
+                assert!(result.logs.is_empty(), "early ClaimRewards/Delegate logs must roll back");
+                let error = if compound {
+                    b"delegation is too small".as_slice()
+                } else {
+                    b"internal error"
+                };
+                if nested {
+                    assert_eq!(&result.output[..32], &[0; 32]);
+                    assert_eq!(&result.output[32..], error);
+                } else {
+                    assert_eq!(result.stop, InstrStop::Revert);
+                    assert_eq!(result.output.as_ref(), error);
+                }
+                for address in [SENDER, contract, STAKING_ADDRESS] {
+                    let info = evm.state_mut().account_info_untracked(&address).unwrap().unwrap();
+                    assert_eq!(info.balance, balance);
+                    assert_eq!(info.nonce, u64::from(address == SENDER));
+                }
+                if compound {
+                    assert_eq!(
+                        evm.state_mut()
+                            .storage_slot_untracked(&STAKING_ADDRESS, &rewards_key)
+                            .unwrap(),
+                        DUST_THRESHOLD - U256::ONE
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn call(input: impl Into<Bytes>) -> Call {
-    Call { input: input.into(), value: U256::ZERO, gas_limit: 2_000_000 }
+    Call { input: input.into(), value: U256::ZERO, gas_limit: 2_000_000, expected_logs: None }
 }
 
 fn prestate() -> Vec<(U256, U256)> {
@@ -654,7 +834,11 @@ fn assert_calls_as(
                 "{spec} call {nonce}"
             );
         }
-        assert_eq!(&result.logs, expected.result.logs(), "{spec} call {nonce}");
+        assert_eq!(
+            result.logs.as_slice(),
+            call.expected_logs.as_deref().unwrap_or_else(|| expected.result.logs()),
+            "{spec} call {nonce}"
+        );
         for (address, account) in &expected.state {
             let actual =
                 evm.state_mut().account_info_untracked(address).unwrap().unwrap_or_default();
@@ -721,12 +905,7 @@ fn query_abi_gas_and_error_ordering_match_release() {
             payable.value = U256::ONE;
             assert!(!assert_calls(spec, &prestate(), &[payable])[0].is_success());
         }
-        for input in [
-            vec![],
-            vec![0xde, 0xad],
-            vec![0xde, 0xad, 0xbe, 0xef],
-            getValidatorCall::SELECTOR.to_vec(),
-        ] {
+        for input in [vec![], vec![0xde, 0xad], vec![0xde, 0xad, 0xbe, 0xef]] {
             assert!(!assert_calls(spec, &prestate(), &[call(input)])[0].is_success());
         }
     }

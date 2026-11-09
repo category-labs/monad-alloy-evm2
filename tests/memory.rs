@@ -13,6 +13,7 @@ use evm2::{
     AccountInfo, ExecutionError, Inspector, TxResult,
     bytecode::Bytecode,
     evm::InMemoryDB,
+    inspector::{InspectorConfig, OpcodeSet},
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, op},
 };
 use monad_revm::{
@@ -32,6 +33,107 @@ const CHILD: Address = Address::repeat_byte(0x33);
 const GRANDCHILD: Address = Address::repeat_byte(0x44);
 const GAS: u64 = 1_000_000;
 const CALLS: [u8; 4] = [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL];
+
+struct ChildStepMask {
+    steps: OpcodeSet,
+    after: OpcodeSet,
+    observed: Vec<u8>,
+    switches: usize,
+}
+
+impl ChildStepMask {
+    const fn child(
+        &mut self,
+        message: &Message<MonadEvmTypes>,
+    ) -> Option<MessageResult<MonadEvmTypes>> {
+        if message.depth == 2 {
+            self.steps = self.after;
+            self.switches += 1;
+        }
+        None
+    }
+}
+
+impl Inspector<MonadEvmTypes> for ChildStepMask {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps(self.steps)
+    }
+
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        message: &mut Message<MonadEvmTypes>,
+    ) -> Option<MessageResult<MonadEvmTypes>> {
+        self.child(message)
+    }
+
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        message: &mut Message<MonadEvmTypes>,
+    ) -> Option<MessageResult<MonadEvmTypes>> {
+        self.child(message)
+    }
+
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
+        if interp.message().depth == 1 {
+            self.observed.push(interp.opcode());
+        }
+    }
+}
+
+#[test]
+fn child_messages_reload_the_suspended_callers_inspector_mask() {
+    let stores = [op::SSTORE].into_iter().collect::<OpcodeSet>();
+    let pops = [op::POP].into_iter().collect::<OpcodeSet>();
+    for opcode in CALLS.into_iter().chain([op::CREATE, op::CREATE2]) {
+        let mut root = vec![];
+        empty_call(&mut root, op::CALL, CHILD);
+        root.push(op::STOP);
+        let mut child = vec![];
+        grow(&mut child, 64);
+        if matches!(opcode, op::CREATE | op::CREATE2) {
+            instruction(
+                &mut child,
+                opcode,
+                &vec![U256::ZERO; if opcode == op::CREATE { 3 } else { 4 }],
+            );
+        } else {
+            empty_call(&mut child, opcode, GRANDCHILD);
+        }
+        child.extend([op::POP, op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP]);
+        let mut fixture = Fixture::new(root);
+        fixture.accounts.push((CHILD, child.into()));
+        for spec in MonadHardfork::ALL {
+            for (before, after) in [
+                (OpcodeSet::EMPTY, stores),
+                (stores, OpcodeSet::EMPTY),
+                (pops, stores),
+                (stores, stores),
+            ] {
+                let mut actual = fixture.run(spec, false);
+                let tx = Recovered::new_unchecked(
+                    MonadTxEnvelope::Legacy(TxLegacy {
+                        nonce: 1,
+                        to: ROOT.into(),
+                        gas_limit: GAS,
+                        ..Default::default()
+                    }),
+                    SENDER,
+                );
+                let mut inspector =
+                    ChildStepMask { steps: before, after, observed: vec![], switches: 0 };
+                let result =
+                    actual.evm.transact_with_inspector(&tx, &mut inspector).unwrap().commit();
+                assert!(result.is_success(), "{spec} {opcode:#x}");
+                assert_eq!(inspector.switches, 1);
+                let expected = if after == stores { vec![op::SSTORE] } else { vec![] };
+                assert_eq!(inspector.observed, expected, "{spec} {opcode:#x}");
+                assert_eq!(actual.evm.ext().memory_pool_offset(), 0);
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Step {

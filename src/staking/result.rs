@@ -1,8 +1,7 @@
 //! Precompile result types used by the staking port.
 //!
-//! These mirror the subset of revm's `Gas`, `InstructionResult` and `InterpreterResult` used by the
-//! `monad-revm` staking handlers, so the handlers port unchanged. [`InterpreterResult::apply`]
-//! converts a result into evm2 precompile semantics.
+//! These model the fixed-cost staking handlers' gas, return and revert outcomes.
+//! [`InterpreterResult::apply`] converts a result into evm2 precompile semantics.
 
 use alloy_primitives::Bytes;
 use evm2::{

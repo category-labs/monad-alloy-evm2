@@ -8,6 +8,7 @@ use super::{
         MAX_EXTERNAL_REWARD, MIN_AUTH_ADDRESS_STAKE, MIN_EXTERNAL_REWARD, MON, SYSTEM_ADDRESS,
         UNIT_BIAS, WITHDRAWAL_DELAY,
     },
+    decode::{decode_add_validator, decode_fixed},
     interface::IMonadStaking::*,
     result::InterpreterResult,
     storage::{
@@ -17,7 +18,7 @@ use super::{
     },
     types::{Delegator, ListNode, RefCountedAccumulator, Validator, validator_flags},
 };
-use alloc::{format, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use evm2::precompiles::PrecompileHalt;
@@ -29,6 +30,10 @@ mod tests;
 ///
 /// Extends [`StorageReader`] with write capabilities needed by delegate,
 /// undelegate, and other state-changing functions.
+///
+/// Handlers may write state or emit logs before a later check fails. Custom
+/// callers must journal and roll back writes, transfers and logs on failure.
+/// Native EVM execution supplies this through its call-frame journal.
 pub trait StakingStorage: StorageReader {
     /// Write a U256 value to storage at the given key.
     fn sstore(&mut self, key: U256, value: U256) -> Result<(), PrecompileHalt>;
@@ -749,6 +754,14 @@ fn internal_delegate<S: StakingStorage>(
     caller: &Address,
     amount: U256,
 ) -> Result<(), PrecompileHalt> {
+    // Registration and compounding use the same delegation checks.
+    if !read_validator(s, val_id)?.exists() {
+        return Err(PrecompileHalt::Other("unknown validator".into()));
+    }
+    if amount < DUST_THRESHOLD {
+        return Err(PrecompileHalt::Other("delegation is too small".into()));
+    }
+
     let mut del = pull_delegator_up_to_date(s, val_id, caller)?;
     let in_boundary = read_in_boundary(s)?;
     let activation_epoch = get_activation_epoch(s)?;
@@ -772,23 +785,7 @@ fn internal_delegate<S: StakingStorage>(
         }
     }
 
-    // Update validator total stake
-    let mut val = read_validator(s, val_id)?;
-    val.stake = checked_add_u256(val.stake, amount)?;
-    write_validator_stake(s, val_id, val.stake)?;
-
-    // Update flags
-    let flags = update_validator_flags_after_delegate(s, val_id, &val, &del, caller)?;
-
-    // Add to valset if flags are now OK
-    if flags == validator_flags::OK {
-        add_to_valset(s, val_id)?;
-    }
-
-    // Insert into linked lists
-    linked_list_insert(s, val_id, caller)?;
-
-    // Emit Delegate event
+    // C++ emits Delegate before any ValidatorStatusChanged event.
     let topics = vec![
         Delegate::SIGNATURE_HASH,
         B256::from(U256::from(val_id)),
@@ -798,6 +795,17 @@ fn internal_delegate<S: StakingStorage>(
     data.extend_from_slice(&amount.to_be_bytes::<32>());
     data.extend_from_slice(&U256::from(activation_epoch).to_be_bytes::<32>());
     emit_event(s, topics, data)?;
+
+    // Update validator total stake.
+    let mut val = read_validator(s, val_id)?;
+    val.stake = checked_add_u256(val.stake, amount)?;
+    write_validator_stake(s, val_id, val.stake)?;
+
+    let flags = update_validator_flags_after_delegate(s, val_id, &val, &del, caller)?;
+    if flags == validator_flags::OK {
+        add_to_valset(s, val_id)?;
+    }
+    linked_list_insert(s, val_id, caller)?;
 
     Ok(())
 }
@@ -813,8 +821,7 @@ pub fn handle_claim_rewards<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = claimRewardsCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<claimRewardsCall>(input)?;
 
     let mut del = pull_delegator_up_to_date(s, call.validatorId, caller)?;
 
@@ -857,22 +864,13 @@ pub fn handle_delegate<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = delegateCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<delegateCall>(input)?;
 
-    let val = read_validator(s, call.validatorId)?;
-    if !val.exists() {
-        return Err(PrecompileHalt::Other("unknown validator".into()));
-    }
-    // Zero-value delegate is a success no-op
+    // Zero-value delegation succeeds without looking up the validator.
     if call_value.is_zero() {
         let encoded = delegateCall::abi_encode_returns(&true);
         return Ok((gas::DELEGATE, encoded.into()));
     }
-    if call_value < DUST_THRESHOLD {
-        return Err(PrecompileHalt::Other("delegation is too small".into()));
-    }
-
     internal_delegate(s, call.validatorId, caller, call_value)?;
 
     let encoded = delegateCall::abi_encode_returns(&true);
@@ -890,8 +888,7 @@ pub fn handle_undelegate<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = undelegateCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<undelegateCall>(input)?;
 
     // No-op for zero amount
     if call.amount.is_zero() {
@@ -994,8 +991,7 @@ pub fn handle_withdraw<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = withdrawCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<withdrawCall>(input)?;
 
     // Load withdrawal request
     let wr_amount = read_u256(
@@ -1069,8 +1065,7 @@ pub fn handle_compound<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = compoundCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<compoundCall>(input)?;
 
     let mut del = pull_delegator_up_to_date(s, call.validatorId, caller)?;
 
@@ -1115,8 +1110,7 @@ pub fn handle_get_delegator_write<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = getDelegatorCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getDelegatorCall>(input)?;
 
     // pull_delegator_up_to_date persists settled state
     let del = pull_delegator_up_to_date(s, call.validatorId, &call.delegator)?;
@@ -1202,8 +1196,7 @@ pub fn handle_change_commission<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = changeCommissionCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<changeCommissionCall>(input)?;
 
     let val = read_validator(s, call.validatorId)?;
     if !val.exists() {
@@ -1244,8 +1237,7 @@ pub fn handle_external_reward<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = externalRewardCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<externalRewardCall>(input)?;
 
     let val = read_validator(s, call.validatorId)?;
     if !val.exists() {
@@ -1297,7 +1289,7 @@ pub fn handle_external_reward<S: StakingStorage>(
     Ok((gas::EXTERNAL_REWARD, encoded.into()))
 }
 
-/// Registers a validator using monad-revm 0.8.0 compatibility rules.
+/// Registers a validator with fixed payload lengths and unverified signatures.
 ///
 /// Signatures are not verified. Lookup identifiers use the authorization address
 /// and first 20 BLS-key bytes, unlike the C++ consensus implementation.
@@ -1312,15 +1304,11 @@ pub fn handle_add_validator<S: StakingStorage>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = addValidatorCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_add_validator(input)?;
 
     // Decode payload: secp_pubkey(33) + bls_pubkey(48) + auth_address(20) + signed_stake(32) +
-    // commission(32) = 165 bytes
+    // commission(32) = 165 bytes, checked by the decoder.
     let payload = &call.payload;
-    if payload.len() < 165 {
-        return Err(PrecompileHalt::Other("invalid input".into()));
-    }
 
     let mut secp_pubkey = [0u8; 33];
     secp_pubkey.copy_from_slice(&payload[0..33]);
@@ -1406,7 +1394,7 @@ fn remove_from_valset<S: StakingStorage>(s: &mut S, val_id: u64) -> Result<(), P
 /// Handle syscallReward(address) — distribute block rewards.
 ///
 /// The block reward amount is resolved from two sources (in priority order):
-/// 1. **Extended calldata**: If `input` is >= 68 bytes, the reward is read from bytes `[36..68]`
+/// 1. **Extended calldata**: If `input` is exactly 68 bytes, the reward is read from bytes `[36..68]`
 ///    (appended after the standard ABI data). This is used by
 ///    [`crate::system::syscall_reward_calldata`] for system-call integration.
 /// 2. **`msg.value`** (`call_value`): Fallback for direct calls (e.g., Foundry
@@ -1425,16 +1413,13 @@ pub fn handle_syscall_reward<S: StakingStorage>(
         return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
     }
 
-    let call = syscallRewardCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
-
+    // Accept the standard ABI or the complete synthetic reward extension.
+    let (call, block_reward) = if input.len() == 68 {
+        (decode_fixed::<syscallRewardCall>(&input[..36])?, U256::from_be_slice(&input[36..68]))
+    } else {
+        (decode_fixed::<syscallRewardCall>(input)?, call_value)
+    };
     let block_author = call.blockAuthor;
-
-    // Resolve block reward: extended calldata (36..68) takes priority over msg.value
-    // Standard ABI: 4 (selector) + 32 (address) = 36 bytes
-    // Extended:     4 (selector) + 32 (address) + 32 (reward) = 68 bytes
-    let block_reward =
-        if input.len() >= 68 { U256::from_be_slice(&input[36..68]) } else { call_value };
 
     // Look up validator from block author address
     let val_id = read_u64(s, val_id_secp_key(&block_author))?;
@@ -1506,7 +1491,7 @@ pub fn handle_syscall_reward<S: StakingStorage>(
 /// Handle syscallSnapshot() — take epoch boundary snapshot.
 pub fn handle_syscall_snapshot<S: StakingStorage>(
     s: &mut S,
-    _input: &[u8],
+    input: &[u8],
     gas_limit: u64,
     caller: &Address,
 ) -> Result<(u64, Bytes), PrecompileHalt> {
@@ -1516,6 +1501,8 @@ pub fn handle_syscall_snapshot<S: StakingStorage>(
     if *caller != SYSTEM_ADDRESS {
         return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
     }
+
+    decode_fixed::<syscallSnapshotCall>(input)?;
 
     // Check not already in boundary
     let in_boundary = read_in_boundary(s)?;
@@ -1635,8 +1622,7 @@ pub fn handle_syscall_on_epoch_change<S: StakingStorage>(
         return Err(PrecompileHalt::Other("Unauthorized: not system address".into()));
     }
 
-    let call = syscallOnEpochChangeCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<syscallOnEpochChangeCall>(input)?;
 
     let current_epoch = read_epoch(s)?;
     // Allow any strictly increasing epoch (next > last), not just +1

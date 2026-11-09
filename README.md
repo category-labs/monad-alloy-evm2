@@ -24,9 +24,13 @@ transactions. `MonadCheckpoint` and `MonadStateSnapshot` pair state with Monad
 bookkeeping; `rebase_reserve_balance` rebuilds tracking against replacement fork
 state and its chain context.
 
-Validator registration follows monad-revm 0.8.0 compatibility rules: it does not
-verify validator signatures and uses simplified public-key lookup identifiers.
-This differs from validator admission in the C++ consensus client.
+Staking follows C++ calldata-consumption rules, accepts zero-value delegation as
+a no-op, applies the delegation minimum to compounded rewards, and emits
+delegation events before validator status changes.
+
+Validator registration retains monad-revm 0.8.0's unverified signatures and
+simplified public-key lookup identifiers. This differs from validator admission
+in the C++ consensus client.
 
 ## Development
 

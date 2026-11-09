@@ -6,6 +6,7 @@
 
 pub mod abi;
 pub mod constants;
+mod decode;
 pub mod interface;
 pub mod result;
 pub mod storage;
@@ -20,6 +21,7 @@ use abi::gas;
 use alloc::{format, string::ToString, vec, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log, U256};
 use alloy_sol_types::SolCall;
+use decode::decode_fixed;
 use evm2::{
     Evm, ExecutionError, HostError,
     interpreter::{GasTracker, Host, Message, MessageKind},
@@ -299,8 +301,7 @@ fn handle_get_validator_reader<R: StorageReader>(
     if gas_limit < gas::GET_VALIDATOR {
         return Err(PrecompileHalt::OutOfGas);
     }
-    let call = getValidatorCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getValidatorCall>(input)?;
     let val_id = call.validatorId;
     let validator = read_validator_reader(reader, val_id)?;
 
@@ -337,8 +338,7 @@ fn handle_get_delegator_reader<R: StorageReader>(
     if gas_limit < gas::GET_DELEGATOR {
         return Err(PrecompileHalt::OutOfGas);
     }
-    let call = getDelegatorCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getDelegatorCall>(input)?;
     let delegator = read_delegator_reader(reader, call.validatorId, &call.delegator)?;
     let encoded = getDelegatorCall::abi_encode_returns(&getDelegatorReturn {
         stake: delegator.stake,
@@ -360,8 +360,7 @@ fn handle_get_withdrawal_request_reader<R: StorageReader>(
     if gas_limit < gas::GET_WITHDRAWAL_REQUEST {
         return Err(PrecompileHalt::OutOfGas);
     }
-    let call = getWithdrawalRequestCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getWithdrawalRequestCall>(input)?;
     let withdrawal =
         read_withdrawal_request_reader(reader, call.validatorId, &call.delegator, call.withdrawId)?;
     let encoded = getWithdrawalRequestCall::abi_encode_returns(&getWithdrawalRequestReturn {
@@ -385,8 +384,7 @@ fn handle_get_validator_set_reader<R: StorageReader>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = getConsensusValidatorSetCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getConsensusValidatorSetCall>(input)?;
     let start_index = call.startIndex;
 
     // Read array length from base slot
@@ -585,8 +583,7 @@ fn handle_get_delegations_reader<R: StorageReader>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = getDelegationsCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getDelegationsCall>(input)?;
 
     let (done, next_val_id, val_ids) = traverse_validators_for_delegator_reader(
         reader,
@@ -613,8 +610,7 @@ fn handle_get_delegators_reader<R: StorageReader>(
         return Err(PrecompileHalt::OutOfGas);
     }
 
-    let call = getDelegatorsCall::abi_decode_raw(&input[4..])
-        .map_err(|e| PrecompileHalt::Other(format!("Invalid input: {e}").into()))?;
+    let call = decode_fixed::<getDelegatorsCall>(input)?;
 
     let (done, next_delegator, delegators) = traverse_delegators_for_validator_reader(
         reader,

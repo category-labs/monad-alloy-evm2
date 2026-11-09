@@ -56,6 +56,45 @@ fn address_flags_slot(auth: Address, flags: u64) -> U256 {
 }
 
 #[test]
+fn delegation_event_precedes_validator_status_change() {
+    let caller = Address::repeat_byte(0x11);
+    let mut storage = MockStorage::default();
+    storage.slots.insert(
+        validator_key(1, validator_offsets::ADDRESS_FLAGS),
+        address_flags_slot(caller, validator_flags::STAKE_TOO_LOW),
+    );
+    internal_delegate(&mut storage, 1, &caller, ACTIVE_VALIDATOR_STAKE).unwrap();
+    assert_eq!(
+        storage.logs.iter().map(|log| log.topics()[0]).collect::<Vec<_>>(),
+        [Delegate::SIGNATURE_HASH, ValidatorStatusChanged::SIGNATURE_HASH]
+    );
+}
+
+#[test]
+fn compounding_enforces_the_delegation_dust_threshold() {
+    let caller = Address::repeat_byte(0x11);
+    for rewards in [U256::ZERO, U256::ONE, DUST_THRESHOLD - U256::ONE, DUST_THRESHOLD] {
+        let mut storage = MockStorage::default();
+        storage.slots.insert(
+            validator_key(1, validator_offsets::ADDRESS_FLAGS),
+            address_flags_slot(caller, validator_flags::OK),
+        );
+        storage.slots.insert(delegator_key(1, &caller, delegator_offsets::REWARDS), rewards);
+        let result = handle_compound(
+            &mut storage,
+            &compoundCall { validatorId: 1 }.abi_encode(),
+            gas::COMPOUND,
+            &caller,
+        );
+        if !rewards.is_zero() && rewards < DUST_THRESHOLD {
+            assert_eq!(result.unwrap_err().to_string(), "delegation is too small");
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+}
+
+#[test]
 fn valset_bitset_handles_bucket_boundaries() {
     let mut storage = MockStorage::default();
 
@@ -120,9 +159,13 @@ fn test_snapshot_clears_stale_snapshot_and_consensus_views() {
         address_flags_slot(Address::new([0x33; 20]), validator_flags::OK),
     );
 
-    let (_gas, output) =
-        handle_syscall_snapshot(&mut storage, &[], gas::SYSCALL_SNAPSHOT + 1_000, &SYSTEM_ADDRESS)
-            .expect("snapshot should succeed");
+    let (_gas, output) = handle_syscall_snapshot(
+        &mut storage,
+        &syscallSnapshotCall {}.abi_encode(),
+        gas::SYSCALL_SNAPSHOT + 1_000,
+        &SYSTEM_ADDRESS,
+    )
+    .expect("snapshot should succeed");
     assert!(output.is_empty());
 
     // Old snapshot val view cleared.
