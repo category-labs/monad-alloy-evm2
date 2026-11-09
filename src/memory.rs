@@ -37,7 +37,10 @@ pub(crate) fn resize_with_gas_reserve<const MIP3: bool>(
     let words = num_words(offset.saturating_add(len));
     #[cfg(feature = "memory_limit")]
     {
-        let limit = state.version().memory_limit;
+        let limit = crate::frame::memory_limit(state.host());
+        // prepare_run installs the fixed engine limit; each Monad frame may use a
+        // different cap without mutating the engine's borrowed configuration.
+        state.memory().set_memory_limit(limit);
         let ancestors = state.host().ext().memory_pool_offset;
         if ancestors.saturating_add((words as u64).saturating_mul(32)) > limit {
             return Err(InstrStop::MemoryLimitOOG);

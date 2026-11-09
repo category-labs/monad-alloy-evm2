@@ -1,9 +1,11 @@
 //! Construction of Monad EVM instances.
 
 use crate::{
-    MonadBlockEnv, MonadEvm, MonadHardfork, MonadHost, MonadLimits, monad_precompiles,
-    reserve_balance::ReservePrecompiles, transaction::tx_registry,
+    MonadBlockEnv, MonadEvm, MonadEvmExt, MonadHardfork, MonadHost, MonadLimits,
+    frame::FramePrecompiles, reserve_balance::ReservePrecompiles, transaction::tx_registry,
 };
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicU8;
 use evm2::{ExecutionConfig, evm::DynDatabase};
 
 /// Builds EVMs for one chain using the supplied hardfork, block, and database.
@@ -53,13 +55,23 @@ impl MonadEvmFactory {
     ) -> MonadEvm<'a> {
         let config =
             ExecutionConfig::for_spec_and_version(spec, self.limits.version(spec, self.chain_id));
-        MonadEvm::new(MonadHost::new_with_execution_config(
+        let mut ext = MonadEvmExt::default();
+        ext.frame.memory_limit = Some(
+            self.limits
+                .memory_limit
+                .unwrap_or(evm2::Version::new(spec.into_eth_spec()).memory_limit),
+        );
+        let selection = Arc::new(AtomicU8::new(spec as u8));
+        let precompiles = FramePrecompiles::new(selection.clone());
+        let host = MonadHost::new_with_execution_config_and_ext(
             config,
             spec,
             block,
             tx_registry(),
             db,
-            ReservePrecompiles(monad_precompiles(spec)),
-        ))
+            ReservePrecompiles(precompiles),
+            ext,
+        );
+        MonadEvm::new(host, selection)
     }
 }

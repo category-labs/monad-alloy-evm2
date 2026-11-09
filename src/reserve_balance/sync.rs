@@ -79,6 +79,7 @@ pub(crate) fn begin_reserve_balance_tx(
 
 pub(crate) fn end_reserve_balance_tx(evm: &mut MonadHost<'_>) {
     let ext = evm.ext_mut();
+    ext.frame.reset();
     ext.reserve_execution = Default::default();
     if !ext.preserve_reserve_balance_tracker {
         ext.reserve_balance.clear();

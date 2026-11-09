@@ -27,7 +27,7 @@ impl EvmTypesHost for MonadEvmTypes {
     type SpecId = MonadHardfork;
     type Tx = MonadTxEnvelope;
     type EvmExt = MonadEvmExt;
-    type MessageExt = ();
+    type MessageExt = MonadMessageExt;
     type MessageResultExt = MonadMessageResultExt;
     type TxEnvExt = ();
     type TxResultExt = MonadTxResultExt;
@@ -52,6 +52,17 @@ pub struct MonadEvmExt {
     pub(crate) reserve_execution: crate::reserve_balance::ReserveExecution,
     pub(crate) memory_pool_offset: u64,
     pub(crate) system_call: Option<crate::system::SystemCall>,
+    pub(crate) frame: crate::frame::FrameContext,
+}
+
+/// Optional rules for a call or creation, selected before its frame starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonadMessageExt {
+    /// Override this frame's hardfork. Descendants inherit it unless overridden.
+    ///
+    /// Inspectors may set this in `call` or `create`. Returning restores the
+    /// parent's rules; transaction admission and fees retain the configured fork.
+    pub hardfork: Option<MonadHardfork>,
 }
 
 /// Reserve-balance outcome attached to a transaction result.
@@ -129,14 +140,7 @@ impl<const BASE_SPEC_ID: u32, const MONAD_SPEC_ID: u32> EvmConfig<MonadEvmTypes>
         if MONAD_SPEC_ID <= u8::MAX as u32
             && MonadHardfork::try_from_u8(MONAD_SPEC_ID as u8).is_some()
         {
-            if MONAD_SPEC_ID >= MonadHardfork::MonadNine as u32 {
-                instructions::configure::<true>(&mut config);
-            } else {
-                instructions::configure::<false>(&mut config);
-            }
-            if MONAD_SPEC_ID >= MonadHardfork::MonadTen as u32 {
-                instructions::configure_mip8(&mut config);
-            }
+            instructions::configure(&mut config);
         }
         config
     };

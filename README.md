@@ -14,6 +14,21 @@ native evm2 host. The current adapter observes root instructions to detect reser
 violations before native rollback, so transactions use evm2's inspected interpreter.
 Callers supply block history through `evm.ext_mut().chain`.
 
+Inspectors can select a call or creation's Monad hardfork in their `call` or
+`create` hook:
+
+```rust
+message.ext.hardfork = Some(MonadHardfork::MonadNine);
+```
+
+Descendants inherit that hardfork unless overridden, and returning restores the
+parent's rules. `frame_hardfork(host)` reports the selected Monad rules. evm2's
+configuration remains fixed throughout execution; its `config_spec_id()` and
+interpreter `spec()` describe that underlying configuration. Transaction
+admission and fees use the configured fork. The default precompiles follow each
+frame; custom providers manage their own selection. `reset_precompiles()`
+reinstalls the default provider.
+
 `system_call()` uses the installed inspector; `system_call_with_inspector()`
 borrows one for a single call. Staking block-lifecycle helpers also use the
 installed inspector. System calls bypass ordinary transaction validation, fees,

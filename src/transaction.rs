@@ -10,7 +10,7 @@ use crate::{
     reserve_balance::{begin_reserve_balance_tx, end_reserve_balance_tx, sync_reserve_balance},
 };
 use alloy_consensus::{Transaction, TxType, Typed2718};
-use alloy_primitives::{Address, Bytes, U256, address};
+use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 use core::fmt;
 use evm2::{
     EvmFeatures, TxResult,
@@ -23,7 +23,7 @@ use evm2::{
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
         validate_priority_fee, validate_sender_and_bump_nonce, validate_tx_gas_limit_cap,
-        warm_access_list, warm_base_accounts,
+        warm_access_list,
     },
     handler::GasSettlement,
     interpreter::{GasTracker, InstrStop},
@@ -122,7 +122,15 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     validate_execution_gas_limit_cap(version, tx.gas_limit(), intrinsic, floor)?;
 
     charge_sender(host, caller, tx, gas_price)?;
-    warm_base_accounts(host, tx.kind());
+    // Keep transaction-initial warmth separate from precompile-only warmth so
+    // changing a frame's fork cannot cool an access-list or beneficiary account.
+    if host.feature(EvmFeatures::EIP3651) {
+        let beneficiary = host.block().beneficiary;
+        host.state_mut().prewarm(&beneficiary);
+    }
+    if let TxKind::Call(to) = tx.kind() {
+        host.state_mut().prewarm(&to);
+    }
     if let Some(access_list) = tx.access_list() {
         warm_access_list(host, access_list);
         if host.config_spec_id() >= MonadHardfork::MonadTen {
@@ -134,6 +142,8 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
             }
         }
     }
+    host.ext_mut().frame.base_warm = Some(host.state().prewarm_set().clone());
+    host.warm_precompiles();
     Ok(PreparedRequest::Transaction(PreparedTx { gas_price, intrinsic }))
 }
 

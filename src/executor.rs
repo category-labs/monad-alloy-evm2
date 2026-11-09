@@ -1,5 +1,6 @@
 //! Transaction and inspector lifecycle around the native evm2 host.
 
+use crate::frame::{FrameInspector, FramePrecompiles};
 use crate::reserve_balance::{ReserveInspector, ReservePrecompiles, end_reserve_balance_tx};
 use crate::{MonadBlockEnv, MonadEvmExt, MonadEvmTypes, MonadHardfork, MonadHost, MonadTxEnvelope};
 use alloc::{boxed::Box, sync::Arc};
@@ -7,7 +8,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use core::{
     fmt,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use evm2::{
     ExecutionConfig, TxResult,
@@ -28,6 +29,8 @@ use evm2::{
 pub struct MonadEvm<'a> {
     host: MonadHost<'a>,
     inspector: Option<Box<dyn Inspector<MonadEvmTypes> + 'a>>,
+    // Kept outside cloneable snapshots so contexts cannot rebind another EVM's provider.
+    frame_selection: Arc<AtomicU8>,
 }
 
 impl fmt::Debug for MonadEvm<'_> {
@@ -50,8 +53,8 @@ impl DerefMut for MonadEvm<'_> {
 }
 
 impl<'a> MonadEvm<'a> {
-    pub(crate) const fn new(host: MonadHost<'a>) -> Self {
-        Self { host, inspector: None }
+    pub(crate) const fn new(host: MonadHost<'a>, frame_selection: Arc<AtomicU8>) -> Self {
+        Self { host, inspector: None, frame_selection }
     }
 
     /// Executes a transaction with automatic reserves, composing the installed inspector.
@@ -61,7 +64,7 @@ impl<'a> MonadEvm<'a> {
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
         let inspector =
             self.inspector.as_mut().map(|inner| &mut **inner as &mut dyn Inspector<MonadEvmTypes>);
-        transact(&mut self.host, tx, inspector)
+        transact(&mut self.host, tx, inspector, self.frame_selection.clone())
     }
 
     /// Executes with a borrowed inspector, retaining Monad's internal reserve observer.
@@ -70,7 +73,7 @@ impl<'a> MonadEvm<'a> {
         tx: &Recovered<MonadTxEnvelope>,
         inspector: &mut dyn Inspector<MonadEvmTypes>,
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
-        transact(&mut self.host, tx, Some(inspector))
+        transact(&mut self.host, tx, Some(inspector), self.frame_selection.clone())
     }
 
     /// Executes and commits each transaction with Monad lifecycle handling.
@@ -114,7 +117,7 @@ impl<'a> MonadEvm<'a> {
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
         let inspector =
             self.inspector.as_mut().map(|inner| &mut **inner as &mut dyn Inspector<MonadEvmTypes>);
-        system_call(&mut self.host, tx, inspector)
+        system_call(&mut self.host, tx, inspector, self.frame_selection.clone())
     }
 
     /// Executes a protocol system call with an inspector borrowed for this call.
@@ -127,10 +130,14 @@ impl<'a> MonadEvm<'a> {
         tx: SystemTx,
         inspector: &mut dyn Inspector<MonadEvmTypes>,
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
-        system_call(&mut self.host, tx, Some(inspector))
+        system_call(&mut self.host, tx, Some(inspector), self.frame_selection.clone())
     }
 
     /// Changes execution configuration while retaining root precompile observation.
+    ///
+    /// The version's memory limit becomes the requested limit for subsequent
+    /// frames. The supplied precompile provider applies to every frame; call
+    /// [`Self::reset_precompiles`] to install the default fork-aware provider.
     pub fn set_execution_config(
         &mut self,
         config: ExecutionConfig<MonadEvmTypes>,
@@ -138,10 +145,16 @@ impl<'a> MonadEvm<'a> {
         registry: TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>>,
         precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a,
     ) {
+        let memory_limit = config.version().memory_limit;
         self.host.set_execution_config(config, spec, registry, ReservePrecompiles(precompiles));
+        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
+        self.host.ext_mut().frame.reset();
+        self.frame_selection.store(spec as u8, Ordering::Relaxed);
     }
 
     /// Changes block and execution configuration while retaining reserve observation.
+    ///
+    /// Memory limits and precompiles follow [`Self::set_execution_config`].
     pub fn set_block_and_execution_config(
         &mut self,
         block: MonadBlockEnv,
@@ -150,6 +163,7 @@ impl<'a> MonadEvm<'a> {
         registry: TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>>,
         precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a,
     ) {
+        let memory_limit = config.version().memory_limit;
         self.host.set_block_and_execution_config(
             block,
             config,
@@ -157,6 +171,23 @@ impl<'a> MonadEvm<'a> {
             registry,
             ReservePrecompiles(precompiles),
         );
+        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
+        self.host.ext_mut().frame.reset();
+        self.frame_selection.store(spec as u8, Ordering::Relaxed);
+    }
+
+    /// Changes block and runtime settings within the configured fork.
+    ///
+    /// Retains the installed providers and updates the requested frame memory limit.
+    pub fn set_block_and_execution_config_within_spec(
+        &mut self,
+        block: MonadBlockEnv,
+        config: ExecutionConfig<MonadEvmTypes>,
+    ) {
+        let memory_limit = config.version().memory_limit;
+        self.host.set_block_and_execution_config_within_spec(block, config);
+        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
+        self.host.ext_mut().frame.reset();
     }
 
     /// Installs a user inspector alongside automatic reserve enforcement.
@@ -185,6 +216,9 @@ impl<'a> MonadEvm<'a> {
     }
 
     /// Replaces precompiles while preserving observation of root precompile failures.
+    ///
+    /// The supplied provider is used for every frame. Custom providers are
+    /// responsible for their own hardfork selection.
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a) {
         self.host.set_precompiles(ReservePrecompiles(precompiles));
     }
@@ -196,12 +230,22 @@ impl<'a> MonadEvm<'a> {
     ) {
         self.set_precompiles(precompiles);
     }
+
+    /// Installs Monad's default precompiles with automatic per-frame hardfork selection.
+    pub fn reset_precompiles(&mut self) {
+        let precompiles = FramePrecompiles::new(self.frame_selection.clone());
+        self.set_precompiles(precompiles);
+        let spec = self.host.config_spec_id();
+        self.host.ext_mut().frame.reset();
+        self.frame_selection.store(spec as u8, Ordering::Relaxed);
+    }
 }
 
 fn system_call<'e, 'a>(
     host: &'e mut MonadHost<'a>,
     tx: SystemTx,
     inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
+    selection: Arc<AtomicU8>,
 ) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
     // The pinned engine scopes borrowed inspectors through its transaction
     // dispatcher. This envelope only selects the handler; the private request
@@ -219,14 +263,21 @@ fn system_call<'e, 'a>(
     let executed = {
         let scope = PreservedScope::new(host);
         let chain = scope.host.ext().chain.clone();
+        let mut frame = scope.host.ext().frame.clone();
+        frame.reset();
         *scope.host.ext_mut() = MonadEvmExt {
             chain,
+            frame,
             system_call: Some(crate::system::SystemCall::new(tx, dispatched.clone())),
             ..Default::default()
         };
         let mut noop = NoopInspector::default();
-        let pending =
-            scope.host.transact_with_inspector(&envelope, inspector.unwrap_or(&mut noop))?;
+        let mut observer = FrameInspector::new(
+            inspector.unwrap_or(&mut noop),
+            selection,
+            scope.host.config_spec_id(),
+        );
+        let pending = scope.host.transact_with_inspector(&envelope, &mut observer)?;
         if !dispatched.load(Ordering::Relaxed) {
             // A replacement registry must not silently treat this as an ordinary tx.
             return Err(HandlerError::external(MissingSystemCallHandler));
@@ -255,8 +306,10 @@ fn transact<'e, 'a>(
     host: &'e mut MonadHost<'a>,
     tx: &Recovered<MonadTxEnvelope>,
     inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
+    selection: Arc<AtomicU8>,
 ) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
-    let mut observer = ReserveInspector::new(inspector);
+    let mut observer =
+        FrameInspector::new(ReserveInspector::new(inspector), selection, host.config_spec_id());
     if host.ext().preserve_reserve_balance_tracker {
         let mut scope = PreservedScope::new(host);
         let executed = scope.host.transact_with_inspector(tx, &mut observer)?.detach();

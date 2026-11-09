@@ -14,47 +14,126 @@ use evm2_macros::instruction;
 mod memory;
 mod storage;
 
-pub(crate) const fn configure_mip8(config: &mut OpcodeConfig<MonadEvmTypes>) {
-    config.set_instruction::<storage::sload>(op::SLOAD, crate::page::BASE_COST as u16);
-    config.set_instruction::<storage::sstore>(op::SSTORE, 0);
+type Mip3Instruction<New, Old> =
+    ForkInstruction<New, Old, { crate::MonadHardfork::MonadNine as u8 }>;
+type Mip8Instruction<New, Old> =
+    ForkInstruction<New, Old, { crate::MonadHardfork::MonadTen as u8 }>;
+
+pub(crate) const fn configure(config: &mut OpcodeConfig<MonadEvmTypes>) {
+    config.set_instruction::<Mip3Instruction<memory::mload<true>, memory::mload<false>>>(
+        op::MLOAD,
+        gas::VERYLOW as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::mstore<true>, memory::mstore<false>>>(
+        op::MSTORE,
+        gas::VERYLOW as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::mstore8<true>, memory::mstore8<false>>>(
+        op::MSTORE8,
+        gas::VERYLOW as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::mcopy<true>, memory::mcopy<false>>>(
+        op::MCOPY,
+        gas::VERYLOW as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::keccak256<true>, memory::keccak256<false>>>(
+        op::KECCAK256,
+        gas::KECCAK256 as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::calldatacopy<true>, memory::calldatacopy<false>>>(op::CALLDATACOPY, gas::VERYLOW as u16);
+    config.set_instruction::<Mip3Instruction<codecopy<true>, codecopy<false>>>(
+        op::CODECOPY,
+        gas::VERYLOW as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::returndatacopy<true>, memory::returndatacopy<false>>>(op::RETURNDATACOPY, gas::VERYLOW as u16);
+    config
+        .set_instruction::<Mip3Instruction<memory::extcodecopy<true>, memory::extcodecopy<false>>>(
+            op::EXTCODECOPY,
+            gas::WARM_STORAGE_READ_COST as u16,
+        );
+    config.set_instruction::<Mip3Instruction<memory::log<0, true>, memory::log<0, false>>>(
+        op::LOG0,
+        gas::LOG as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::log<1, true>, memory::log<1, false>>>(
+        op::LOG1,
+        gas::LOG as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::log<2, true>, memory::log<2, false>>>(
+        op::LOG2,
+        gas::LOG as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::log<3, true>, memory::log<3, false>>>(
+        op::LOG3,
+        gas::LOG as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::log<4, true>, memory::log<4, false>>>(
+        op::LOG4,
+        gas::LOG as u16,
+    );
+    config.set_instruction::<Mip3Instruction<memory::ret<true>, memory::ret<false>>>(op::RETURN, 0);
+    config.set_instruction::<Mip3Instruction<memory::revert<true>, memory::revert<false>>>(
+        op::REVERT,
+        0,
+    );
+    config.set_instruction::<Mip3Instruction<call<{ op::CALL }, true>, call<{ op::CALL }, false>>>(
+        op::CALL,
+        gas::WARM_STORAGE_READ_COST as u16,
+    );
+    config.set_instruction::<Mip3Instruction<call<{ op::CALLCODE }, true>, call<{ op::CALLCODE }, false>>>(op::CALLCODE, gas::WARM_STORAGE_READ_COST as u16);
+    config.set_instruction::<Mip3Instruction<call<{ op::DELEGATECALL }, true>, call<{ op::DELEGATECALL }, false>>>(op::DELEGATECALL, gas::WARM_STORAGE_READ_COST as u16);
+    config.set_instruction::<Mip3Instruction<call<{ op::STATICCALL }, true>, call<{ op::STATICCALL }, false>>>(op::STATICCALL, gas::WARM_STORAGE_READ_COST as u16);
+    config.set_instruction::<Mip3Instruction<create<false, true>, create<false, false>>>(
+        op::CREATE,
+        0,
+    );
+    config.set_instruction::<Mip3Instruction<create<true, true>, create<true, false>>>(
+        op::CREATE2,
+        0,
+    );
+    config.set_instruction::<Mip8Instruction<storage::sload, instructions::sload<MonadEvmTypes>>>(
+        op::SLOAD,
+        gas::WARM_STORAGE_READ_COST as u16,
+    );
+    config
+        .set_instruction::<Mip8Instruction<storage::sstore, instructions::sstore<MonadEvmTypes>>>(
+            op::SSTORE,
+            0,
+        );
+    config.set_instruction::<clz>(op::CLZ, 0);
 }
 
-pub(crate) const fn configure<const MIP3: bool>(config: &mut OpcodeConfig<MonadEvmTypes>) {
-    config.set_instruction::<memory::mload<MIP3>>(op::MLOAD, gas::VERYLOW as u16);
-    config.set_instruction::<memory::mstore<MIP3>>(op::MSTORE, gas::VERYLOW as u16);
-    config.set_instruction::<memory::mstore8<MIP3>>(op::MSTORE8, gas::VERYLOW as u16);
-    config.set_instruction::<memory::mcopy<MIP3>>(op::MCOPY, gas::VERYLOW as u16);
-    config.set_instruction::<memory::keccak256<MIP3>>(op::KECCAK256, gas::KECCAK256 as u16);
-    config.set_instruction::<memory::calldatacopy<MIP3>>(op::CALLDATACOPY, gas::VERYLOW as u16);
-    config.set_instruction::<codecopy<MIP3>>(op::CODECOPY, gas::VERYLOW as u16);
-    config.set_instruction::<memory::returndatacopy<MIP3>>(op::RETURNDATACOPY, gas::VERYLOW as u16);
-    config.set_instruction::<memory::extcodecopy<MIP3>>(
-        op::EXTCODECOPY,
-        gas::WARM_STORAGE_READ_COST as u16,
-    );
-    config.set_instruction::<memory::log<0, MIP3>>(op::LOG0, gas::LOG as u16);
-    config.set_instruction::<memory::log<1, MIP3>>(op::LOG1, gas::LOG as u16);
-    config.set_instruction::<memory::log<2, MIP3>>(op::LOG2, gas::LOG as u16);
-    config.set_instruction::<memory::log<3, MIP3>>(op::LOG3, gas::LOG as u16);
-    config.set_instruction::<memory::log<4, MIP3>>(op::LOG4, gas::LOG as u16);
-    config.set_instruction::<memory::ret<MIP3>>(op::RETURN, 0);
-    config.set_instruction::<memory::revert<MIP3>>(op::REVERT, 0);
-    config
-        .set_instruction::<call<{ op::CALL }, MIP3>>(op::CALL, gas::WARM_STORAGE_READ_COST as u16);
-    config.set_instruction::<call<{ op::CALLCODE }, MIP3>>(
-        op::CALLCODE,
-        gas::WARM_STORAGE_READ_COST as u16,
-    );
-    config.set_instruction::<call<{ op::DELEGATECALL }, MIP3>>(
-        op::DELEGATECALL,
-        gas::WARM_STORAGE_READ_COST as u16,
-    );
-    config.set_instruction::<call<{ op::STATICCALL }, MIP3>>(
-        op::STATICCALL,
-        gas::WARM_STORAGE_READ_COST as u16,
-    );
-    config.set_instruction::<create<false, MIP3>>(op::CREATE, 0);
-    config.set_instruction::<create<true, MIP3>>(op::CREATE2, 0);
+/// Dispatches only the rules that differ between the supported Monad frames.
+/// Their inherited feature flags and dynamic gas parameters are identical.
+struct ForkInstruction<New, Old, const SINCE: u8>(core::marker::PhantomData<(New, Old)>);
+
+impl<New: Instruction<MonadEvmTypes>, Old: Instruction<MonadEvmTypes>, const SINCE: u8>
+    Instruction<MonadEvmTypes> for ForkInstruction<New, Old, SINCE>
+{
+    const DYNAMIC_GAS: bool = New::DYNAMIC_GAS || Old::DYNAMIC_GAS;
+    const MESSAGE: bool = New::MESSAGE || Old::MESSAGE;
+
+    fn execute(
+        pc: &mut Pc,
+        stack: StackMut<'_>,
+        state: &mut InterpreterState<'_, '_, MonadEvmTypes>,
+    ) -> Result {
+        if crate::frame_hardfork(state.host()) as u8 >= SINCE {
+            New::execute(pc, stack, state)
+        } else {
+            Old::execute(pc, stack, state)
+        }
+    }
+}
+
+/// CLZ activation is frame-local; unavailable frames fail before stack checks.
+#[instruction(EvmTypes = MonadEvmTypes, no_stack_preamble, dynamic_gas)]
+fn clz(cx: _) -> Result {
+    if crate::frame_hardfork(cx.state.host()) < crate::MonadHardfork::MonadNine {
+        return Err(InstrStop::NotActivated);
+    }
+    cx.gas.spend(u64::from(gas::LOW))?;
+    instructions::clz::<MonadEvmTypes>::execute(cx.pc, stack, cx.state)
 }
 
 /// Keeps the suspended frame's allocation in the pool until the inherited handler returns.

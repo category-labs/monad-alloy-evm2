@@ -68,7 +68,7 @@ pub fn run_reserve_balance_precompile(
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    debug_assert!(MonadHardfork::MonadNine.is_enabled_in(evm.config_spec_id()));
+    debug_assert!(MonadHardfork::MonadNine.is_enabled_in(crate::frame_hardfork(evm)));
     let is_delegated_call =
         message.kind == MessageKind::Call && message.destination != message.code_address;
     let is_static = message.kind == MessageKind::StaticCall || message.caller_is_static;

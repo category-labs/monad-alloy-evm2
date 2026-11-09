@@ -20,7 +20,7 @@ pub use chain::{MonadChainContext, default_max_reserve_balance};
 mod evm;
 pub use evm::{
     MonadBlockEnv, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadHaltReason, MonadHost,
-    MonadMessageResultExt, MonadTxEnvelope, MonadTxResultExt,
+    MonadMessageExt, MonadMessageResultExt, MonadTxEnvelope, MonadTxResultExt,
 };
 
 mod executor;
@@ -28,6 +28,9 @@ pub use executor::{MonadEvm, MonadExecutedTx};
 
 mod factory;
 pub use factory::MonadEvmFactory;
+
+mod frame;
+pub use frame::frame_hardfork;
 
 mod instructions;
 
