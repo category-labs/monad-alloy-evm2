@@ -61,10 +61,17 @@ selects the repository's toolchain automatically. LLVM is not required.
 ```sh
 cargo check --locked
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
-cargo doc --locked --no-deps --all-features
+cargo doc --locked --workspace --no-deps --all-features
+```
+
+The [fixture runner](crates/monad-fixtures/README.md) replays blockchain fixtures,
+checks execution commitments, and compares results with monad-revm 0.8.0:
+
+```sh
+cargo run --locked -p monad-evm2-fixtures -- /path/to/blockchain_tests --json
 ```
 
 To check `no_std` support:

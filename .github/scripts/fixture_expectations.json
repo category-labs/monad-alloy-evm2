@@ -1,0 +1,149 @@
+{
+  "spec_revision": "12e2c05bcfa6daeef9c0f4c54c5c7a13fde39e89",
+  "reference": "monad-revm 0.8.0",
+  "summary": {
+    "total": 227,
+    "passed": 226,
+    "failed": 1,
+    "unsupported": 0,
+    "parity_checks": 2155,
+    "parity_differences": 301,
+    "corrected_reference_receipts": 702
+  },
+  "fixture_failures": [
+    {
+      "file": "valid_blocks/highGasUsage.json",
+      "name": "./updated_2/highGasUsage.json::highGasUsage_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "message": "block 1: receipts root mismatch: expected 0x0ea87bd79fe41df810ea2d14ab13c6a3095c5ac9f181a747d9eccca4df09a392, got 0x71ddce3aeced8691b6b4a222fdf0249f8016197a484b54fc5915793fda7b67eb; transactions [0: reserve_balance_violation]"
+    }
+  ],
+  "reserve_differences": [
+    {
+      "file": "valid_blocks/OOGStateCopyContainingDeletedContract.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/OOGStateCopyContainingDeletedContract.json::OOGStateCopyContainingDeletedContract_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "3f9f4a8c2f3d73c89d32c958733af083864ac34a56803c7903c623270484d471"
+    },
+    {
+      "file": "valid_blocks/RecallSuicidedContract.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/RecallSuicidedContract.json::RecallSuicidedContract_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 2,
+      "sha256": "9ee3d6c1daa01bdf85066f37ffd80aa0628ff8dfc05150f7f7fb7838f997d216"
+    },
+    {
+      "file": "valid_blocks/RecallSuicidedContractInOneBlock.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/RecallSuicidedContractInOneBlock.json::RecallSuicidedContractInOneBlock_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 2,
+      "sha256": "9899edf5029eb1eb698895010c6cc52f71323ebf26947e3ceaacddd75c2a813b"
+    },
+    {
+      "file": "valid_blocks/SuicidesMixingCoinbase.json",
+      "name": "./updated_2/SuicidesMixingCoinbase.json::SuicidesMixingCoinbase_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "6720ff48cbf30075db73e1dab923828353b3c2061502c754dbda93af4ebb83a0"
+    },
+    {
+      "file": "valid_blocks/SuicidesMixingCoinbase2.json",
+      "name": "./updated_2/SuicidesMixingCoinbase2.json::SuicidesMixingCoinbase2_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "5dae2ee1da5d1ef75a1c63f97f9bdd5cfc19fb70738e18181e026b7a84e7ac35"
+    },
+    {
+      "file": "valid_blocks/gasLimitTooHigh2.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/gasLimitTooHigh2.json::gasLimitTooHigh2_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 3,
+      "sha256": "79bcb474804ea0b3ba320769b9f140bf0d1f61dfdbbdf13345b0d83eb60eafc8"
+    },
+    {
+      "file": "valid_blocks/highGasUsage.json",
+      "name": "./updated_2/highGasUsage.json::highGasUsage_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "4d7d3633d18a97e43ba254c96a2ed841ea7701e0a8696e0f027ff566c294eed1"
+    },
+    {
+      "file": "valid_blocks/logRevert.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/logRevert.json::logRevert_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 7,
+      "sha256": "af81a1f38041edd77380dec1c98cfd73e33ad57419759e15c739306b746df104"
+    },
+    {
+      "file": "valid_blocks/multimpleBalanceInstruction.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/multimpleBalanceInstruction.json::multimpleBalanceInstruction_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "7f290c193ccf82d24b090ddf0c729cc7db01d55973affce5fd356b25dbe30ad4"
+    },
+    {
+      "file": "valid_blocks/suicideCoinbase.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/suicideCoinbase.json::suicideCoinbase_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 2,
+      "sha256": "689b0a2e2bbf8ac1f39dbbc6c2663023580eb7988a3c88679e061ec09df01243"
+    },
+    {
+      "file": "valid_blocks/timeDiff12.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/timeDiff12.json::timeDiff12_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "99fab24cb8b0e6d3fb0e838ad143cf1f63f2bac0c3a254073be34776d6156205"
+    },
+    {
+      "file": "valid_blocks/timeDiff13.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/timeDiff13.json::timeDiff13_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "4ba2a728b231ba0c7259fffde3c1a0b912cf43ba06a501ba6be602823a57910b"
+    },
+    {
+      "file": "valid_blocks/timeDiff14.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/timeDiff14.json::timeDiff14_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 1,
+      "sha256": "4505b643f75017b6f3b5319f25f517184c494a590f9e6649126d9a8c5647c4e3"
+    },
+    {
+      "file": "valid_blocks/wallet2outOf3txs.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/wallet2outOf3txs.json::wallet2outOf3txs_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 4,
+      "sha256": "07c8733e288292822733cbfb9612808b01200b4fe94ca5481246140351824223"
+    },
+    {
+      "file": "valid_blocks/wallet2outOf3txs2.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/wallet2outOf3txs2.json::wallet2outOf3txs2_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 4,
+      "sha256": "4379037e8bee57a1bea84e9626810fed378cecdb5b182d7decb5dc295ea8ff15"
+    },
+    {
+      "file": "valid_blocks/wallet2outOf3txsRevoke.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/wallet2outOf3txsRevoke.json::wallet2outOf3txsRevoke_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 5,
+      "sha256": "c661b31fa05f732cc2c6723438e50c5401e35f63f9966429c99d6e4f25ebcf0c"
+    },
+    {
+      "file": "valid_blocks/wallet2outOf3txsRevokeAndConfirmAgain.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/wallet2outOf3txsRevokeAndConfirmAgain.json::wallet2outOf3txsRevokeAndConfirmAgain_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 6,
+      "sha256": "edbf66861f819fb140fd0a768ead15bf4fbe6bbb806aee636a5d947dee9cbf40"
+    },
+    {
+      "file": "valid_blocks/walletReorganizeOwners.json",
+      "name": "test/execution/fixtures/blockchain_tests/valid_blocks/walletReorganizeOwners.json::walletReorganizeOwners_MONAD_EIGHT",
+      "network": "MONAD_EIGHT",
+      "count": 258,
+      "sha256": "2ad77e17769a5f6247b874d984dc5da8beb98ded5933ce4e46ea7f07b1caa964"
+    }
+  ]
+}

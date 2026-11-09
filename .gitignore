@@ -1,1 +1,4 @@
 /target/
+/.fixture-spec/
+/fixture-results/
+__pycache__/
