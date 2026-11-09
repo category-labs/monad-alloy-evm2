@@ -4,7 +4,14 @@
 //! category/execution/monad/staking/staking_contract.cpp and
 //! category/execution/ethereum/core/contract/abi_decode.hpp.
 
-use alloy_monad_evm2::{
+use alloy_primitives::{Address, Bytes, Log, U256};
+use alloy_sol_types::SolCall;
+use evm2::{
+    evm::InMemoryDB,
+    interpreter::{GasTracker, Message},
+    precompiles::{PrecompileError, PrecompileHalt},
+};
+use monad_evm2::{
     MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
     staking::{
         STAKING_ADDRESS, StorageReader,
@@ -15,13 +22,6 @@ use alloy_monad_evm2::{
         run_staking_precompile, run_staking_with_reader,
         write::{StakingStorage, run_staking_write},
     },
-};
-use alloy_primitives::{Address, Bytes, Log, U256};
-use alloy_sol_types::SolCall;
-use evm2::{
-    evm::InMemoryDB,
-    interpreter::{GasTracker, Message},
-    precompiles::{PrecompileError, PrecompileHalt},
 };
 use std::collections::BTreeMap;
 

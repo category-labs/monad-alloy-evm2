@@ -149,21 +149,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloy-monad-evm2"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-sol-types",
- "evm2",
- "evm2-macros",
- "monad-revm",
- "revm",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "alloy-primitives"
 version = "1.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,18 +2192,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "monad-evm2"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "evm2",
+ "evm2-macros",
+ "monad-revm",
+ "revm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "monad-evm2-fixtures"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-monad-evm2",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie",
  "clap",
  "evm2",
  "eyre",
+ "monad-evm2",
  "monad-revm",
  "revm",
  "serde",

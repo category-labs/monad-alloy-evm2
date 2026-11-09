@@ -1,7 +1,8 @@
 # monad-evm2-fixtures
 
-Replay signed blockchain JSON fixtures through `alloy-monad-evm2`, verify their
-execution commitments, and compare individual operations with the published
+Replay signed blockchain JSON fixtures through
+[`monad-evm2`](../monad-evm2/README.md), verify their execution commitments, and
+compare individual operations with the published
 `monad-revm = 0.8.0` release.
 
 ## Running
@@ -121,5 +122,5 @@ python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
 Tests construct signed fixtures with independently calculated expectations and
 deliberately corrupt roots, receipts and reports. They require no external corpus.
-The runtime library remains the default workspace member; this tool requires
-`std` and does not change the library's `no_std` configuration.
+Both crates are workspace members. This tool requires `std` and memory limits;
+target `-p monad-evm2` explicitly for runtime feature and `no_std` checks.

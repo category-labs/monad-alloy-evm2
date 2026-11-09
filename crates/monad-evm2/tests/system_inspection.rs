@@ -1,10 +1,6 @@
 //! Inspector callbacks and lifecycle isolation for protocol system calls.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadHost,
-    MonadTxEnvelope, ReserveBalanceInit, SYSTEM_ADDRESS, reserve_balance::reserve_account,
-};
 use alloy_primitives::{Address, Bytes, Log, U256};
 use evm2::{
     AccountInfo, ExecutionConfig, ExecutionError, Inspector, TxResult,
@@ -13,6 +9,10 @@ use evm2::{
     inspector::InspectorConfig,
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
     registry::{TxRequest, handler},
+};
+use monad_evm2::{
+    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadHost,
+    MonadTxEnvelope, ReserveBalanceInit, SYSTEM_ADDRESS, reserve_balance::reserve_account,
 };
 use std::{
     cell::RefCell,
@@ -472,11 +472,11 @@ fn a_replacement_registry_cannot_silently_execute_system_calls_as_transactions()
     );
     let spec = evm.config_spec_id();
     let config = ExecutionConfig::for_spec_and_version(spec, *evm.version());
-    evm.set_execution_config(config, spec, replacement, alloy_monad_evm2::monad_precompiles(spec));
+    evm.set_execution_config(config, spec, replacement, monad_evm2::monad_precompiles(spec));
     let error = evm.system_call(system_tx()).unwrap_err();
     assert!(error.to_string().contains("system calls require the Monad transaction handler"));
     assert_eq!(evm.state_mut().account(&ROOT).unwrap().balance(), U256::from(10));
     let config = ExecutionConfig::for_spec_and_version(spec, *evm.version());
-    evm.set_execution_config(config, spec, original, alloy_monad_evm2::monad_precompiles(spec));
+    evm.set_execution_config(config, spec, original, monad_evm2::monad_precompiles(spec));
     assert!(evm.system_call(system_tx()).unwrap().commit().is_success());
 }

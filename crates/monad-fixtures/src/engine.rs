@@ -2,9 +2,6 @@
 
 use crate::{fixture::Allocation, parity::Observation, state};
 use alloy_consensus::{Header, Transaction, TxEnvelope, transaction::Recovered};
-use alloy_monad_evm2::{
-    MonadBlockEnv, MonadChainContext, MonadEvmFactory, MonadHardfork, MonadTxEnvelope,
-};
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{
     AccountInfo,
@@ -12,6 +9,9 @@ use evm2::{
     evm::{InMemoryDB, SystemTx},
 };
 use eyre::{Result, WrapErr};
+use monad_evm2::{
+    MonadBlockEnv, MonadChainContext, MonadEvmFactory, MonadHardfork, MonadTxEnvelope,
+};
 use monad_revm::{
     MonadBuilder, MonadCfgEnv, MonadChainContext as ReferenceChain,
     MonadHardfork as ReferenceHardfork, MonadJournalTr, monad_context_with_db,

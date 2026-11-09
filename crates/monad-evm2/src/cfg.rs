@@ -104,7 +104,7 @@ impl MonadLimits {
     /// handlers for the protocol rules described in [`crate::spec`].
     ///
     /// ```
-    /// use alloy_monad_evm2::{MonadHardfork, MonadLimits, MONAD_MAINNET_CHAIN_ID};
+    /// use monad_evm2::{MonadHardfork, MonadLimits, MONAD_MAINNET_CHAIN_ID};
     ///
     /// let limits = MonadLimits { max_code_size: Some(100_000), ..Default::default() };
     /// let version = limits.version(MonadHardfork::MonadTen, MONAD_MAINNET_CHAIN_ID);

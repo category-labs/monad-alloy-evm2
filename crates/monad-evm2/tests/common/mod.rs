@@ -1,6 +1,6 @@
 //! Corresponding hardforks in the two execution engines.
 
-use alloy_monad_evm2::MonadHardfork;
+use monad_evm2::MonadHardfork;
 use monad_revm::MonadHardfork as ReferenceHardfork;
 
 pub(crate) const FORKS: [(MonadHardfork, ReferenceHardfork); 4] = [

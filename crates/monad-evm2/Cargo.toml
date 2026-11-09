@@ -1,0 +1,42 @@
+[package]
+name = "monad-evm2"
+description = "Monad execution on evm2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["monad", "evm", "evm2", "ethereum"]
+categories = ["cryptography::cryptocurrencies"]
+publish.workspace = true
+
+[dependencies]
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+evm2.workspace = true
+evm2-macros.workspace = true
+
+# serde
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+monad-revm = { workspace = true, features = ["std"] }
+revm = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+
+[features]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"]
+std = ["evm2/std", "serde?/std"]
+serde = ["dep:serde"]
+c-kzg = ["evm2/c-kzg"]
+secp256k1 = ["evm2/secp256k1"]
+portable = ["evm2/portable"]
+blst = ["evm2/blst"]
+# Keep the test reference's memory-limit feature in sync.
+memory_limit = ["monad-revm/memory_limit"]
+
+[lints]
+workspace = true

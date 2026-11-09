@@ -1,6 +1,13 @@
 //! Native system-call lifecycle, failure handling and funding.
 
-use alloy_monad_evm2::{
+use alloy_primitives::{Address, B256, U256};
+use evm2::{
+    AccountInfo, Inspector,
+    bytecode::Bytecode,
+    evm::{Database, Db, InMemoryDB},
+    interpreter::{Interpreter, Message, MessageResult},
+};
+use monad_evm2::{
     MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
     apply_epoch_boundary, apply_syscall_on_epoch_change, apply_syscall_reward,
     apply_syscall_snapshot,
@@ -12,13 +19,6 @@ use alloy_monad_evm2::{
         },
     },
     staking_system_tx, syscall_on_epoch_change_calldata, syscall_snapshot_tx,
-};
-use alloy_primitives::{Address, B256, U256};
-use evm2::{
-    AccountInfo, Inspector,
-    bytecode::Bytecode,
-    evm::{Database, Db, InMemoryDB},
-    interpreter::{Interpreter, Message, MessageResult},
 };
 use std::{cell::Cell, io, rc::Rc};
 
@@ -143,7 +143,7 @@ impl Database for FailingStorageDb {
     fn get_storage(&mut self, address: &Address, key: &U256) -> io::Result<U256> {
         if self.fail
             && *address == STAKING_ADDRESS
-            && *key == alloy_monad_evm2::staking::storage::valset_slots::CONSENSUS
+            && *key == monad_evm2::staking::storage::valset_slots::CONSENSUS
         {
             self.fail = false;
             return Err(io::Error::other("injected staking storage failure"));

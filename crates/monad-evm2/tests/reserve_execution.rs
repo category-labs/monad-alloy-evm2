@@ -1,15 +1,6 @@
 //! Reserve tracking across transaction boundaries, native rollbacks and query calls.
 
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
-use alloy_monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHaltReason, MonadHardfork,
-    MonadTxEnvelope, ReserveAccount, ReserveBalanceInit,
-    reserve_balance::{
-        DIPPED_INTO_RESERVE_SELECTOR, MonadCheckpoint, MonadStateSnapshot, RESERVE_BALANCE_ADDRESS,
-        dipped_into_reserve, rebase_reserve_balance, reserve_account,
-        run_reserve_balance_precompile,
-    },
-};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     AccountInfo, ExecutionConfig, ExecutionError, Inspector,
@@ -18,6 +9,15 @@ use evm2::{
     evm::InMemoryDB,
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, op},
     precompiles::{PrecompileError, PrecompileHalt},
+};
+use monad_evm2::{
+    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHaltReason, MonadHardfork,
+    MonadTxEnvelope, ReserveAccount, ReserveBalanceInit,
+    reserve_balance::{
+        DIPPED_INTO_RESERVE_SELECTOR, MonadCheckpoint, MonadStateSnapshot, RESERVE_BALANCE_ADDRESS,
+        dipped_into_reserve, rebase_reserve_balance, reserve_account,
+        run_reserve_balance_precompile,
+    },
 };
 use revm::context_interface::transaction::{
     Authorization, RecoveredAuthority, RecoveredAuthorization,
@@ -622,7 +622,7 @@ fn installed_inspectors_and_nonzero_initial_depth_keep_automatic_enforcement() {
         ExecutionConfig::for_spec_and_version(spec, version),
         spec,
         evm.registry().clone(),
-        alloy_monad_evm2::monad_precompiles(spec),
+        monad_evm2::monad_precompiles(spec),
     );
     let result = evm.transact(&tx(TARGET, 1, 1)).unwrap().commit();
     assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
@@ -657,7 +657,7 @@ fn rebase_drops_accounts_missing_from_the_replacement_fork() {
 #[test]
 fn batch_transactions_enforce_reserves_and_native_entrypoints_cannot_bypass_the_wrapper() {
     let mut evm = evm(MonadHardfork::MonadTen, true);
-    let error = alloy_monad_evm2::MonadHost::transact(&mut evm, &tx(TARGET, 1, 0)).unwrap_err();
+    let error = monad_evm2::MonadHost::transact(&mut evm, &tx(TARGET, 1, 0)).unwrap_err();
     assert!(error.to_string().contains("through MonadEvm"));
     assert_eq!(balance(&mut evm, SENDER), U256::from(INITIAL));
     let transactions = [tx(TARGET, 1, 0), tx(TARGET, 0, 1)];

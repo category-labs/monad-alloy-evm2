@@ -35,7 +35,7 @@ impl MonadEvmFactory {
     /// call frames. Other instructions are inherited from the base fork.
     ///
     /// ```
-    /// use alloy_monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
+    /// use monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
     /// use evm2::evm::InMemoryDB;
     ///
     /// let factory = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID);

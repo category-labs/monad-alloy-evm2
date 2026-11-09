@@ -1,9 +1,9 @@
 //! Fixture parsing and explicit capability checks.
 
 use alloy_consensus::{Block, Header, TxEnvelope};
-use alloy_monad_evm2::MonadHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use eyre::{Result, WrapErr, ensure, eyre};
+use monad_evm2::MonadHardfork;
 use serde_json::Value;
 use std::collections::BTreeMap;
 

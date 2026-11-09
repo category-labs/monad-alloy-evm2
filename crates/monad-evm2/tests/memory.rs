@@ -3,10 +3,6 @@
 mod common;
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmFactory,
-    MonadEvmTypes, MonadHardfork, MonadTxEnvelope, monad_memory_cost,
-};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use common::FORKS;
 use evm2::{
@@ -15,6 +11,10 @@ use evm2::{
     evm::InMemoryDB,
     inspector::{InspectorConfig, OpcodeSet},
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, op},
+};
+use monad_evm2::{
+    MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmFactory,
+    MonadEvmTypes, MonadHardfork, MonadTxEnvelope, monad_memory_cost,
 };
 use monad_revm::{
     MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,

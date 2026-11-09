@@ -3,10 +3,6 @@
 mod common;
 
 use alloy_consensus::{TxEip2930, TxLegacy, transaction::Recovered};
-use alloy_monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
-    frame_hardfork, monad_version,
-};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use common::FORKS;
 use evm2::{
@@ -16,6 +12,10 @@ use evm2::{
     inspector::InspectorConfig,
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
     version::GasId,
+};
+use monad_evm2::{
+    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
+    frame_hardfork, monad_version,
 };
 use monad_revm::{
     MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, api::default_ctx::MonadContext,
@@ -390,7 +390,7 @@ fn immediate_precompiles_follow_child_rules_and_restore_the_parent() {
 
 #[test]
 fn reserve_precompile_activation_and_contract_fallback_follow_the_child() {
-    let target = alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+    let target = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     let fallback = Bytes::from_static(&[
         op::PUSH1,
         0x42,
@@ -558,7 +558,7 @@ fn fatal_errors_and_panics_do_not_leak_a_child_fork() {
             assert!(
                 !actual
                     .precompiles()
-                    .contains(&alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS)
+                    .contains(&monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS)
             );
             assert!(actual.transact(&tx()).unwrap().discard().is_success());
         }
@@ -671,7 +671,7 @@ fn frame_memory_limits_follow_explicit_runtime_configuration_updates() {
 
 #[test]
 fn relocated_precompiles_retain_activation_and_failed_moves_are_atomic() {
-    let original = alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+    let original = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     let relocated = Address::repeat_byte(0x55);
     let mut parent = vec![];
     call(&mut parent, op::CALL, relocated);
@@ -703,7 +703,7 @@ fn relocated_precompiles_retain_activation_and_failed_moves_are_atomic() {
 
 #[test]
 fn copied_extension_contexts_cannot_rebind_another_evms_precompiles() {
-    let target = alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+    let target = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     let mut parent = vec![];
     call(&mut parent, op::CALL, target);
     finish_parent(&mut parent);
@@ -721,7 +721,7 @@ fn copied_extension_contexts_cannot_rebind_another_evms_precompiles() {
 
 #[test]
 fn precompile_warmth_follows_frame_activation_in_both_directions() {
-    let target = alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+    let target = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     let mut parent = vec![];
     call(&mut parent, op::CALL, CHILD);
     parent.extend([op::PUSH20]);
@@ -750,7 +750,7 @@ fn precompile_warmth_follows_frame_activation_in_both_directions() {
 
 #[test]
 fn frame_changes_preserve_beneficiary_and_access_list_warmth() {
-    let target = alloy_monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+    let target = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     for child_address in [CHILD, target] {
         let mut parent = vec![];
         call(&mut parent, op::CALL, child_address);

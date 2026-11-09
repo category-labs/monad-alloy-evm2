@@ -1,40 +1,33 @@
 [package]
 name = "monad-evm2-fixtures"
 description = "Monad blockchain fixture replay and execution parity checks"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.96"
-license = "MIT"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish.workspace = true
 
 [dependencies]
-alloy-monad-evm2 = { path = "../.." }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "24868e54be0bfae070be9d22acb0404ed93f7c4a", default-features = false }
-monad-revm = { version = "=0.8.0", default-features = false, features = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"] }
-revm = { version = "43.0.0", default-features = false, features = ["std"] }
-alloy-consensus = { version = "2.5", features = ["secp256k1"] }
-alloy-primitives = { version = "1.7", features = ["serde"] }
-alloy-rlp = "0.3"
-alloy-trie = { version = "0.9", features = ["ethereum"] }
-clap = { version = "4", features = ["derive"] }
-eyre = "0.6"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-walkdir = "2"
+monad-evm2.workspace = true
+evm2.workspace = true
+monad-revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"] }
+revm = { workspace = true, features = ["std"] }
+alloy-consensus = { workspace = true, default-features = true, features = ["secp256k1"] }
+alloy-primitives = { workspace = true, default-features = true, features = ["serde"] }
+alloy-rlp.workspace = true
+alloy-trie.workspace = true
+clap.workspace = true
+eyre.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+walkdir.workspace = true
 
 [dev-dependencies]
-alloy-eips = "2.5"
-tempfile = "3"
+alloy-eips.workspace = true
+tempfile.workspace = true
 
-[lints.rust]
-missing_debug_implementations = "warn"
-missing_docs = "warn"
-rust_2018_idioms = { level = "deny", priority = -1 }
-unreachable_pub = "warn"
-unused_must_use = "deny"
-
-[lints.rustdoc]
-all = "warn"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
+[lints]
+workspace = true

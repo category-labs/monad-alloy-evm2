@@ -1,102 +1,74 @@
-# alloy-monad-evm2
+# Monad EVM2
 
-Monad execution on [evm2](https://github.com/alloy-rs/evm2).
+Monad execution on [evm2](https://github.com/alloy-rs/evm2), with blockchain
+fixture replay and execution parity checks.
 
-Ordinary transactions enforce reserve balances automatically. Reserve rejection
-rolls back execution while retaining fees, the sender nonce and EIP-7702
-authorizations. `result.ext.halt_reason` identifies
-`MonadHaltReason::ReserveBalanceViolation`; evm2's native stop code is `Revert`
-to preserve unused CALL gas. Inspectors see the rejection after execution state
-has been rolled back.
+## Crates
 
-`MonadEvm` manages transaction and inspector lifecycles around `MonadHost`, the
-native evm2 host. The current adapter observes root instructions to detect reserve
-violations before native rollback, so transactions use evm2's inspected interpreter.
-Callers supply block history through `evm.ext_mut().chain`.
+| Package | Purpose |
+| --- | --- |
+| [`monad-evm2`](crates/monad-evm2/README.md) | Runtime library: Monad hardforks, transaction fees, memory and storage pricing, precompiles, reserve balances, staking, and inspected execution. |
+| [`monad-evm2-fixtures`](crates/monad-fixtures/README.md) | CLI for replaying signed blockchain fixtures, verifying execution commitments, and comparing results with monad-revm 0.8.0. |
 
-Inspectors can select a call or creation's Monad hardfork in their `call` or
-`create` hook:
+The root Cargo manifest defines the workspace and shared package settings,
+dependency versions, and lint rules. Each crate owns its source, tests, and
+documentation.
+
+## Runtime usage
+
+Import the runtime crate as `monad_evm2`:
 
 ```rust
-message.ext.hardfork = Some(MonadHardfork::MonadNine);
+use monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
+use evm2::evm::InMemoryDB;
+
+let factory = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID);
+let evm = factory.create_evm(
+    MonadHardfork::MonadTen,
+    MonadBlockEnv::default(),
+    InMemoryDB::default(),
+);
 ```
 
-Descendants inherit that hardfork unless overridden, and returning restores the
-parent's rules. `frame_hardfork(host)` reports the selected Monad rules. evm2's
-configuration remains fixed throughout execution; its `config_spec_id()` and
-interpreter `spec()` describe that underlying configuration. Transaction
-admission and fees use the configured fork. The default precompiles follow each
-frame; custom providers manage their own selection. `reset_precompiles()`
-reinstalls the default provider.
+The [runtime documentation](crates/monad-evm2/README.md) describes reserve
+enforcement, per-frame hardfork selection, inspectors, system calls, and optional
+features.
 
-`system_call()` uses the installed inspector; `system_call_with_inspector()`
-borrows one for a single call. Staking block-lifecycle helpers also use the
-installed inspector. System calls bypass ordinary transaction validation, fees,
-nonce updates and reserve enforcement, and preserve any enclosing synthetic
-call's reserve context. Their state handles support commit, discard and detach.
-
-Internal-call simulations may set `preserve_reserve_balance_tracker` after
-initializing or copying the enclosing transaction's reserve context. These
-synthetic calls retain its original balance baselines and defer enforcement to
-the enclosing transaction. Discarding a synthetic call restores its context;
-committing keeps its tracking changes. The enclosing caller must check reserves
-before accepting execution and restore the flag to `false` for ordinary
-transactions. `MonadCheckpoint` and `MonadStateSnapshot` pair state with Monad
-bookkeeping; `rebase_reserve_balance` rebuilds tracking against replacement fork
-state and its chain context.
-
-Staking follows C++ calldata-consumption rules, accepts zero-value delegation as
-a no-op, applies the delegation minimum to compounded rewards, and emits
-delegation events before validator status changes.
-
-Validator registration retains monad-revm 0.8.0's unverified signatures and
-simplified public-key lookup identifiers. This differs from validator admission
-in the C++ consensus client.
-
-## Development
-
-Requires Rust 1.96 or later. With [rustup](https://rustup.rs/) installed, Cargo
-selects the repository's toolchain automatically. LLVM is not required.
-
-```sh
-cargo check --locked
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo test --locked
-cargo test --locked --all-features
-cargo doc --locked --workspace --no-deps --all-features
-```
-
-The [fixture runner](crates/monad-fixtures/README.md) replays blockchain fixtures,
-checks execution commitments, and compares results with monad-revm 0.8.0:
+## Fixture replay
 
 ```sh
 cargo run --locked -p monad-evm2-fixtures -- /path/to/blockchain_tests --json
 ```
 
-To check `no_std` support:
+The [fixture guide](crates/monad-fixtures/README.md) covers supported inputs,
+reports, known reference differences, and the pinned CI corpus.
+
+## Development
+
+Requires Rust 1.96 or later. Cargo selects the toolchain through
+`rust-toolchain.toml`. LLVM is not required.
+
+Run these commands from the workspace root:
+
+```sh
+cargo check --locked --workspace
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace
+cargo test --locked --workspace --all-features
+cargo test --locked -p monad-evm2 --no-default-features --features std,serde
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+cargo doc --locked --workspace --no-deps --all-features
+```
+
+The fixture runner requires `std` and memory limits. Target the runtime package
+explicitly when checking feature configurations or `no_std` builds:
 
 ```sh
 rustup target add thumbv7em-none-eabi
-cargo check --locked --lib --no-default-features --target thumbv7em-none-eabi
-cargo check --locked --lib --no-default-features --features serde --target thumbv7em-none-eabi
+cargo check --locked -p monad-evm2 --lib --no-default-features --target thumbv7em-none-eabi
+cargo check --locked -p monad-evm2 --lib --no-default-features --features serde --target thumbv7em-none-eabi
 ```
-
-## Features
-
-| Feature | Purpose | Default |
-| --- | --- | --- |
-| `std` | Enable the standard library in evm2 and optional serialization support. | Yes |
-| `serde` | Enable Serde support. | No |
-| `c-kzg` | Enable evm2's C KZG backend. | Yes |
-| `secp256k1` | Enable evm2's native secp256k1 backend. | Yes |
-| `blst` | Enable evm2's BLST backend. | Yes |
-| `portable` | Enable portable builds of the selected KZG and BLST backends. | Yes |
-| `memory_limit` | Apply memory limits shared by active call frames, capped at 8 MiB for MonadNine and later. | Yes |
-
-Disable default features for `no_std` builds. The `serde` feature supports
-`no_std` and enables the local Serde dependency without enabling evm2's
-engine-state serialization.
 
 ## License
 
