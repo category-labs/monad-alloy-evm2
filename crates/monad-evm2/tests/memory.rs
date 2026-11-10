@@ -145,6 +145,7 @@ struct Step {
 #[derive(Debug, Default)]
 struct Trace {
     opcode: u8,
+    gas_before: u64,
     steps: Vec<Step>,
     children: Vec<(MessageKind, InstrStop)>,
 }
@@ -153,6 +154,7 @@ impl Inspector<MonadEvmTypes> for Trace {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
         if interp.message().depth == 0 {
             self.opcode = interp.opcode();
+            self.gas_before = interp.gas().remaining();
         }
     }
 
@@ -160,7 +162,7 @@ impl Inspector<MonadEvmTypes> for Trace {
         if interp.message().depth == 0 {
             self.steps.push(Step {
                 opcode: self.opcode,
-                cost: interp.step_cost(),
+                cost: self.gas_before.saturating_sub(interp.gas().remaining()),
                 memory: interp.memory().len(),
             });
         }

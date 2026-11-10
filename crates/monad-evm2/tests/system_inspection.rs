@@ -131,7 +131,7 @@ impl Inspector<MonadEvmTypes> for Observer {
             assert_eq!(message.caller, SYSTEM_ADDRESS);
             assert_eq!(message.value, U256::ZERO);
             assert_eq!(message.gas_limit, GAS);
-            assert_eq!(message.input, system_tx().data);
+            assert_eq!(message.input.to_bytes(), system_tx().data);
         }
         self.0.borrow_mut().calls.push((message.depth, message.destination));
         None

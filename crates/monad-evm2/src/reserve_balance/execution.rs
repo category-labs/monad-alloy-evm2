@@ -161,7 +161,7 @@ impl Inspector<MonadEvmTypes> for ReserveInspector<'_> {
             |inner| inner.inspector_config(),
         );
         // Refresh at the same boundaries where the engine reads its configuration.
-        self.user_steps.set(config.steps);
+        self.user_steps.set(config.steps());
         if self.enforce_root && self.frames == 1 {
             // Any root instruction can halt, including static-gas and stack failures.
             InspectorConfig::new()

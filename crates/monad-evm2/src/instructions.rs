@@ -5,7 +5,7 @@ use evm2::{
     EvmFeatures, OpcodeConfig,
     interpreter::{
         Host, InstrStop, InterpreterState, Pc, Result, StackMut, gas, instructions, op,
-        private::Instruction,
+        private::{Instruction, InstructionFlags},
     },
     utils::WordExt,
 };
@@ -110,8 +110,7 @@ struct ForkInstruction<New, Old, const SINCE: u8>(core::marker::PhantomData<(New
 impl<New: Instruction<MonadEvmTypes>, Old: Instruction<MonadEvmTypes>, const SINCE: u8>
     Instruction<MonadEvmTypes> for ForkInstruction<New, Old, SINCE>
 {
-    const DYNAMIC_GAS: bool = New::DYNAMIC_GAS || Old::DYNAMIC_GAS;
-    const MESSAGE: bool = New::MESSAGE || Old::MESSAGE;
+    const FLAGS: InstructionFlags = New::FLAGS.union(Old::FLAGS);
 
     fn execute(
         pc: &mut Pc,
@@ -153,7 +152,7 @@ fn execute_message<I: Instruction<MonadEvmTypes>>(
 }
 
 /// Expands input and output memory before evm2 prepares and executes a call.
-#[instruction(EvmTypes = MonadEvmTypes, no_stack_preamble, dynamic_gas, message)]
+#[instruction(EvmTypes = MonadEvmTypes, no_stack_preamble, hooked)]
 fn call<const OP: u8, const MIP3: bool>(cx: _) -> Result {
     let has_value = matches!(OP, op::CALL | op::CALLCODE);
     let args = if has_value { 7 } else { 6 };
@@ -192,7 +191,7 @@ fn call<const OP: u8, const MIP3: bool>(cx: _) -> Result {
 }
 
 /// CREATE/CREATE2 with Monad's restriction on delegated execution contexts.
-#[instruction(EvmTypes = MonadEvmTypes, no_stack_preamble, dynamic_gas, message)]
+#[instruction(EvmTypes = MonadEvmTypes, no_stack_preamble, hooked)]
 fn create<const IS_CREATE2: bool, const MIP3: bool>(cx: _) -> Result {
     if cx.state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);

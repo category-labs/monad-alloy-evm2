@@ -79,7 +79,7 @@ fn run_precompile(
         destination: target,
         call_target: target,
         code_address: target,
-        input,
+        input: input.into(),
         gas_limit: limit,
         ..Default::default()
     };

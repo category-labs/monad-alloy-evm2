@@ -100,7 +100,7 @@ fn run(
                 call_target: STAKING_ADDRESS,
                 caller,
                 value,
-                input: Bytes::copy_from_slice(input),
+                input: Bytes::copy_from_slice(input).into(),
                 gas_limit,
                 ..Default::default()
             };

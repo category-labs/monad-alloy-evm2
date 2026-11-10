@@ -108,14 +108,14 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
         tx.value(),
     );
     if let Some(set_code) = tx.as_eip7702() {
-        let auths = &set_code.authorization_list;
-        if auths.is_empty() {
+        let auth_count = set_code.authorizations().len();
+        if auth_count == 0 {
             return Err(HandlerError::EmptyAuthorizationList);
         }
-        if auths.iter().any(|auth| auth.authority() == Some(SYSTEM_ADDRESS)) {
+        if set_code.authorizations().any(|auth| auth.authority() == Some(SYSTEM_ADDRESS)) {
             return Err(HandlerError::external(SystemSenderIsAuthority));
         }
-        intrinsic = intrinsic.saturating_add(eip7702_authorization_gas(version, auths.len()));
+        intrinsic = intrinsic.saturating_add(eip7702_authorization_gas(version, auth_count));
     }
     validate_intrinsic_gas(tx.gas_limit(), intrinsic, 0)?;
     validate_floor_gas(tx.gas_limit(), floor)?;
@@ -231,7 +231,7 @@ fn execute_inner(
     if let Some(set_code) = tx.as_eip7702() {
         // Authorization changes survive a reverted call. Monad discards their gas refunds.
         let mut refunds = AuthRefunds::new(host.version());
-        apply_auth_list(host, chain_id, &set_code.authorization_list, &mut refunds)?;
+        apply_auth_list(host, chain_id, set_code.authorizations(), &mut refunds)?;
     }
     let (execution_gas, reservoir) =
         initial_gas_and_reservoir(host.version(), gas_limit, intrinsic, 0);
@@ -250,9 +250,8 @@ fn execute_inner(
         host.ext_mut().reserve_execution.checkpoint = Some(host.state().checkpoint());
         host.ext_mut().reserve_execution.depth = host.version().initial_call_depth;
     }
-    let entered_execution = frame.is_some();
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
-    if entered_execution && !host.ext().reserve_execution.observed {
+    if !host.ext().reserve_execution.observed {
         // Direct native-host entrypoints cannot compose the mandatory observer. Abort so
         // bypassing the wrapper never accepts execution without reserve adjudication.
         return Err(HandlerError::external(MissingMonadExecutor));

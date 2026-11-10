@@ -24,7 +24,7 @@ use revm::{
     context::{BlockEnv, TxEnv},
     context_interface::{
         result::{ExecutionResult, HaltReason},
-        transaction::{AccessListItem, Authorization, RecoveredAuthority, RecoveredAuthorization},
+        transaction::{AccessListItem, Authorization, SignedAuthorization},
     },
     database::InMemoryDB as ReferenceDB,
     state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
@@ -446,8 +446,8 @@ fn creation_checks_the_storage_context_across_all_call_kinds() {
                         );
                         let (finished, result) = &actual.trace.create_ends[0];
                         let created = result.created_address.unwrap();
-                        // The entry hook sees the creator; frame setup selects the new account.
-                        assert_eq!(creation.code_address, creator);
+                        // The entry hook already identifies the account being created.
+                        assert_eq!(creation.code_address, created);
                         assert_eq!(creation.destination, created);
                         assert_eq!(finished.caller, creator);
                         assert_eq!(
@@ -614,13 +614,15 @@ fn set_code(authority: Address, delegate: Address, authority_nonce: u64) -> Mona
         chain_id: MONAD_MAINNET_CHAIN_ID,
         gas_limit: TX_GAS,
         to: authority,
+        authorization_list: vec![SignedAuthorization::new_unchecked(
+            Authorization { chain_id: U256::ZERO, address: delegate, nonce: authority_nonce },
+            0,
+            U256::ZERO,
+            U256::ZERO,
+        )],
         ..Default::default()
     };
-    let authorization = RecoveredAuthorization::new_unchecked(
-        Authorization { chain_id: U256::ZERO, address: delegate, nonce: authority_nonce },
-        RecoveredAuthority::Valid(authority),
-    );
-    LazyTxEip7702::from_cached_recovered_authorizations(tx, vec![authorization]).into()
+    LazyTxEip7702::from_cached_recovered_authorizations(tx, vec![Some(authority)]).into()
 }
 
 #[test]

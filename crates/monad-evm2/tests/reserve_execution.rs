@@ -19,9 +19,7 @@ use monad_evm2::{
         run_reserve_balance_precompile,
     },
 };
-use revm::context_interface::transaction::{
-    Authorization, RecoveredAuthority, RecoveredAuthorization,
-};
+use revm::context_interface::transaction::{Authorization, SignedAuthorization};
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const TARGET: Address = Address::repeat_byte(0x22);
@@ -172,7 +170,7 @@ fn reserve_query_gas_input_and_call_context_validation() {
         destination: RESERVE_BALANCE_ADDRESS,
         code_address: RESERVE_BALANCE_ADDRESS,
         call_target: RESERVE_BALANCE_ADDRESS,
-        input: Bytes::copy_from_slice(&DIPPED_INTO_RESERVE_SELECTOR),
+        input: Bytes::copy_from_slice(&DIPPED_INTO_RESERVE_SELECTOR).into(),
         gas_limit: 100,
         ..Default::default()
     };
@@ -197,14 +195,14 @@ fn reserve_query_gas_input_and_call_context_validation() {
     }
     for (input, value, expected) in [
         (Bytes::new(), U256::ZERO, "method not supported"),
-        (message.input.clone(), U256::ONE, "value is nonzero"),
+        (message.input.to_bytes(), U256::ONE, "value is nonzero"),
         (
             Bytes::from([DIPPED_INTO_RESERVE_SELECTOR.as_slice(), &[0]].concat()),
             U256::ZERO,
             "input is invalid",
         ),
     ] {
-        let invalid = Message::<MonadEvmTypes> { input, value, ..message.clone() };
+        let invalid = Message::<MonadEvmTypes> { input: input.into(), value, ..message.clone() };
         let mut gas = GasTracker::new(100);
         let Err(PrecompileError::Revert(bytes)) =
             run_reserve_balance_precompile(&mut evm, &invalid, &mut gas)
@@ -357,9 +355,11 @@ fn precompile_failures_are_adjudicated_before_the_transfer_is_rolled_back() {
 fn reserve_rejection_retains_eip7702_authorizations() {
     let authority = Address::repeat_byte(0x44);
     let mut evm = evm(MonadHardfork::MonadTen, true);
-    let authorization = RecoveredAuthorization::new_unchecked(
+    let authorization = SignedAuthorization::new_unchecked(
         Authorization { chain_id: U256::ZERO, address: TARGET, nonce: 0 },
-        RecoveredAuthority::Valid(authority),
+        0,
+        U256::ZERO,
+        U256::ZERO,
     );
     let envelope = LazyTxEip7702::from_cached_recovered_authorizations(
         TxEip7702 {
@@ -369,9 +369,10 @@ fn reserve_rejection_retains_eip7702_authorizations() {
             max_priority_fee_per_gas: 1,
             to: authority,
             value: U256::ONE,
+            authorization_list: vec![authorization],
             ..Default::default()
         },
-        vec![authorization],
+        vec![Some(authority)],
     );
     let result = evm.transact(&Recovered::new_unchecked(envelope.into(), SENDER)).unwrap().commit();
     assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));

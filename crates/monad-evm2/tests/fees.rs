@@ -23,9 +23,7 @@ use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
 use revm::{
     DatabaseCommit, ExecuteEvm,
     context::{BlockEnv, TxEnv},
-    context_interface::transaction::{
-        AccessListItem, Authorization, RecoveredAuthority, RecoveredAuthorization,
-    },
+    context_interface::transaction::{AccessListItem, Authorization, SignedAuthorization},
     database::InMemoryDB as ReferenceDB,
     state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
@@ -227,7 +225,7 @@ fn calldata_floor_is_validated_and_execution_consumption_is_preserved() {
     let mut tx = TxLegacy { input: Bytes::from_static(b"hello"), ..legacy(21_080, 0) };
     assert!(matches!(
         evm.validate_tx(&recovered(MonadTxEnvelope::Legacy(tx.clone()))),
-        Err(HandlerError::IntrinsicGasTooLow { required: 21_200, got: 21_080 })
+        Err(HandlerError::GasLimitBelowFloor { required: 21_200, got: 21_080 })
     ));
     tx.gas_limit = 100_000;
     let mut remaining = RemainingGas::default();
@@ -272,17 +270,20 @@ fn set_code(authorities: &[Address]) -> Recovered<MonadTxEnvelope> {
         max_fee_per_gas: 50,
         max_priority_fee_per_gas: 1,
         to: AUTHORITY,
+        authorization_list: authorities
+            .iter()
+            .map(|_| {
+                SignedAuthorization::new_unchecked(
+                    Authorization { chain_id: U256::ZERO, address: REVERTER, nonce: 0 },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )
+            })
+            .collect(),
         ..Default::default()
     };
-    let authorizations = authorities
-        .iter()
-        .map(|&address| {
-            RecoveredAuthorization::new_unchecked(
-                Authorization { chain_id: U256::ZERO, address: REVERTER, nonce: 0 },
-                RecoveredAuthority::Valid(address),
-            )
-        })
-        .collect();
+    let authorizations = authorities.iter().copied().map(Some).collect();
     recovered(LazyTxEip7702::from_cached_recovered_authorizations(tx, authorizations).into())
 }
 

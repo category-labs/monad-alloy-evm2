@@ -43,6 +43,7 @@ const GAS: u64 = 5_000_000;
 #[derive(Debug, Default)]
 struct Trace {
     opcodes: Vec<u8>,
+    gas_before: Vec<u64>,
     accesses: Vec<(usize, Address, u8, u64)>,
     children: Vec<InstrStop>,
 }
@@ -52,13 +53,16 @@ impl Inspector<MonadEvmTypes> for Trace {
         let depth = usize::from(interp.message().depth);
         self.opcodes.resize(self.opcodes.len().max(depth + 1), op::STOP);
         self.opcodes[depth] = interp.opcode();
+        self.gas_before.resize(self.opcodes.len(), 0);
+        self.gas_before[depth] = interp.gas().remaining();
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
         let depth = usize::from(interp.message().depth);
         let opcode = self.opcodes[depth];
         if matches!(opcode, op::SLOAD | op::SSTORE) {
-            self.accesses.push((depth, interp.message().destination, opcode, interp.step_cost()));
+            let cost = self.gas_before[depth].saturating_sub(interp.gas().remaining());
+            self.accesses.push((depth, interp.message().destination, opcode, cost));
         }
     }
 
