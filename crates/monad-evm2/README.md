@@ -32,6 +32,13 @@ admission and fees use the configured fork. The default precompiles follow each
 frame; custom providers manage their own selection. `reset_precompiles()`
 reinstalls the default provider.
 
+`monad_precompiles()` returns `MonadPrecompiles`. Its relocation API allows
+cryptographic precompiles to move, but rejects nonidentity moves from staking
+(`0x1000`) and reserve balance (`0x1001`), whose handlers depend on their protocol
+addresses. `MonadEvm` applies the same restriction to installed custom providers.
+Rejected batches leave all fork tables unchanged. Direct map customization is an
+explicit override and remains the caller's responsibility.
+
 `system_call()` uses the installed inspector; `system_call_with_inspector()`
 borrows one for a single call. Staking block-lifecycle helpers also use the
 installed inspector. System calls bypass ordinary transaction validation, fees,

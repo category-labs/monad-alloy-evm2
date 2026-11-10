@@ -69,7 +69,7 @@ fn evm(spec: MonadHardfork) -> MonadEvm<'static> {
 
 fn run_precompile(
     evm: &mut MonadEvm<'_>,
-    provider: &mut Precompiles<MonadEvmTypes>,
+    provider: &mut impl PrecompileProvider<MonadEvmTypes>,
     target: u16,
     input: Bytes,
     limit: u64,

@@ -273,6 +273,7 @@ impl<P: PrecompileProvider<MonadEvmTypes>> PrecompileProvider<MonadEvmTypes>
         &mut self,
         moves: &[(Address, Address)],
     ) -> Result<(), MovePrecompileError> {
+        crate::precompiles::validate_native_relocations(moves)?;
         self.0.move_precompiles(moves)
     }
 

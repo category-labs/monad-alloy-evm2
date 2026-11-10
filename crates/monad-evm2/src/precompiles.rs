@@ -7,13 +7,16 @@
 use crate::reserve_balance::{RESERVE_BALANCE_ADDRESS, run_reserve_balance_precompile};
 use crate::staking::{STAKING_ADDRESS, run_staking_precompile};
 use crate::{MonadEvmTypes, MonadHardfork, MonadHost};
+use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, hex};
 use evm2::{
     Precompiles, crypto,
+    evm::PrewarmSet,
     interpreter::{GasTracker, Message},
-    precompile::PrecompileOutput,
+    precompile::{PrecompileOutput, PrecompileProvider},
     precompiles::{
-        P256VERIFY_OSAKA, Precompile, PrecompileHalt, PrecompileId, PrecompileResult, bn254,
+        MovePrecompileError, P256VERIFY_OSAKA, Precompile, PrecompileHalt, PrecompileId,
+        PrecompileMap, PrecompileResult, bn254,
     },
 };
 
@@ -32,6 +35,100 @@ pub const MONAD_BLAKE2F_ROUND_GAS: u64 = 2;
 /// Gas charged for KZG point evaluation at address `0x0a`.
 pub const MONAD_POINT_EVALUATION_GAS: u64 = 200_000;
 
+/// Identifier of the native staking precompile.
+pub const MONAD_STAKING_ID: &str = "MonadStaking";
+/// Identifier of the native reserve-balance precompile.
+pub const MONAD_RESERVE_BALANCE_ID: &str = "MonadReserveBalance";
+
+/// Monad precompiles with native protocol addresses excluded from relocation.
+#[derive(Clone, Debug)]
+pub struct MonadPrecompiles {
+    spec: MonadHardfork,
+    inner: Precompiles<MonadEvmTypes>,
+}
+
+impl MonadPrecompiles {
+    /// Builds the precompile provider for a Monad hardfork.
+    pub fn new(spec: MonadHardfork) -> Self {
+        monad_precompiles(spec)
+    }
+
+    /// Returns the hardfork used to construct this provider.
+    pub const fn spec(&self) -> MonadHardfork {
+        self.spec
+    }
+
+    /// Returns the underlying precompile map.
+    pub fn as_map(&self) -> &PrecompileMap<MonadEvmTypes> {
+        self.inner.as_map()
+    }
+
+    /// Returns the map for explicit provider customization.
+    ///
+    /// Direct map mutations bypass relocation checks. Keep native handlers at
+    /// their protocol addresses; use [`PrecompileProvider::move_precompiles`]
+    /// for checked relocation.
+    pub fn as_map_mut(&mut self) -> &mut PrecompileMap<MonadEvmTypes> {
+        self.inner.as_map_mut()
+    }
+}
+
+impl Default for MonadPrecompiles {
+    fn default() -> Self {
+        Self::new(MonadHardfork::default())
+    }
+}
+
+impl PrecompileProvider<MonadEvmTypes> for MonadPrecompiles {
+    fn addresses(&self) -> Vec<Address> {
+        self.inner.addresses()
+    }
+
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        self.inner.warm_addresses(warm);
+    }
+
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        self.inner.precompile_ids()
+    }
+
+    fn contains(&self, address: &Address) -> bool {
+        self.inner.contains(address)
+    }
+
+    /// Relocates cryptographic precompiles, rejecting native protocol sources.
+    ///
+    /// Identity moves are ignored. Validation precedes every table change.
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        validate_native_relocations(moves)?;
+        self.inner.move_precompiles(moves)
+    }
+
+    fn execute(
+        &mut self,
+        host: &mut MonadHost<'_>,
+        message: &Message<MonadEvmTypes>,
+        gas: &mut GasTracker,
+    ) -> Option<PrecompileResult> {
+        self.inner.execute(host, message, gas)
+    }
+}
+
+pub(crate) fn validate_native_relocations(
+    moves: &[(Address, Address)],
+) -> Result<(), MovePrecompileError> {
+    for &(source, destination) in moves {
+        if source != destination && matches!(source, STAKING_ADDRESS | RESERVE_BALANCE_ADDRESS) {
+            // evm2 has no separate error for a precompile that cannot be moved.
+            return Err(MovePrecompileError::NotAPrecompile(source));
+        }
+    }
+    Ok(())
+}
+
 /// Encoded field elements per blob and BLS scalar modulus, as specified by EIP-4844.
 const POINT_EVALUATION_RETURN_VALUE: [u8; 64] = hex!(
     "0000000000000000000000000000000000000000000000000000000000001000"
@@ -45,7 +142,7 @@ const POINT_EVALUATION_RETURN_VALUE: [u8; 64] = hex!(
 /// Includes staking at `0x1000` on every supported fork and adds the reserve
 /// query at `0x1001` from MonadNine.
 /// The provider also supplies these addresses for transaction prewarming.
-pub fn monad_precompiles(spec: MonadHardfork) -> Precompiles<MonadEvmTypes> {
+pub fn monad_precompiles(spec: MonadHardfork) -> MonadPrecompiles {
     let mut precompiles = Precompiles::base(spec.into_eth_spec());
     precompiles.as_map_mut().extend([
         Precompile::new(Address::with_last_byte(0x01), PrecompileId::EcRec, ecrecover),
@@ -61,18 +158,18 @@ pub fn monad_precompiles(spec: MonadHardfork) -> Precompiles<MonadEvmTypes> {
         P256VERIFY_OSAKA(),
         Precompile::new(
             STAKING_ADDRESS,
-            PrecompileId::custom("MonadStaking"),
+            PrecompileId::custom(MONAD_STAKING_ID),
             run_staking_precompile,
         ),
     ]);
     if spec >= MonadHardfork::MonadNine {
         precompiles.as_map_mut().insert(Precompile::new(
             RESERVE_BALANCE_ADDRESS,
-            PrecompileId::custom("MonadReserveBalance"),
+            PrecompileId::custom(MONAD_RESERVE_BALANCE_ID),
             run_reserve_balance_precompile,
         ));
     }
-    precompiles
+    MonadPrecompiles { spec, inner: precompiles }
 }
 
 fn ecrecover(

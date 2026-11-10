@@ -1,11 +1,11 @@
 //! Frame-local Monad rules over evm2's immutable execution configuration.
 
-use crate::{MonadEvmTypes, MonadHardfork, MonadHost, monad_precompiles};
+use crate::{MonadEvmTypes, MonadHardfork, MonadHost, MonadPrecompiles, monad_precompiles};
 use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, Log, U256};
 use core::sync::atomic::{AtomicU8, Ordering};
 use evm2::{
-    Inspector, PrecompileError, Precompiles,
+    Inspector, PrecompileError,
     evm::PrewarmSet,
     inspector::InspectorConfig,
     interpreter::{GasTracker, Interpreter, Message, MessageResult},
@@ -47,7 +47,7 @@ pub(crate) fn memory_limit(host: &MonadHost<'_>) -> u64 {
 /// Selects immutable precompile tables without replacing evm2's active provider.
 pub(crate) struct FramePrecompiles {
     selection: Arc<AtomicU8>,
-    providers: [Precompiles<MonadEvmTypes>; 4],
+    providers: [MonadPrecompiles; 4],
 }
 
 impl FramePrecompiles {
@@ -55,7 +55,7 @@ impl FramePrecompiles {
         Self { selection, providers: MonadHardfork::ALL.map(monad_precompiles) }
     }
 
-    fn selected(&self) -> &Precompiles<MonadEvmTypes> {
+    fn selected(&self) -> &MonadPrecompiles {
         &self.providers
             [(self.selection.load(Ordering::Relaxed) - MonadHardfork::MonadEight as u8) as usize]
     }

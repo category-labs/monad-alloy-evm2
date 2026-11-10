@@ -40,7 +40,7 @@ pub use memory::monad_memory_cost;
 pub mod page;
 
 pub mod precompiles;
-pub use precompiles::monad_precompiles;
+pub use precompiles::{MonadPrecompiles, monad_precompiles};
 
 pub mod protocol;
 pub use protocol::{ProtocolSystemCall, ProtocolSystemCallError, protocol_system_call};

@@ -670,8 +670,9 @@ fn frame_memory_limits_follow_explicit_runtime_configuration_updates() {
 }
 
 #[test]
-fn relocated_precompiles_retain_activation_and_failed_moves_are_atomic() {
-    let original = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
+fn relocated_crypto_precompiles_retain_fork_pricing_and_atomicity() {
+    let original = Address::with_last_byte(5);
+    let native = monad_evm2::reserve_balance::RESERVE_BALANCE_ADDRESS;
     let relocated = Address::repeat_byte(0x55);
     let mut parent = vec![];
     call(&mut parent, op::CALL, relocated);
@@ -681,11 +682,27 @@ fn relocated_precompiles_retain_activation_and_failed_moves_are_atomic() {
         let root = MonadHardfork::MonadTen;
         let mut actual = evm(root, &accounts, None);
         actual.precompiles_mut().move_precompiles(&[(original, relocated)]).unwrap();
-        let mut selector = Selector::new(root, child);
         assert!(
-            actual.transact_with_inspector(&tx(), &mut selector).unwrap().discard().is_success()
+            actual
+                .precompiles_mut()
+                .move_precompiles(&[(relocated, Address::ZERO), (native, CHILD),])
+                .is_err()
         );
-        assert_eq!(selector.ends[0].2.is_success(), child == MonadHardfork::MonadEight);
+        let mut selector = Selector::new(root, child);
+        let result = actual.transact_with_inspector(&tx(), &mut selector).unwrap().discard();
+        assert!(result.is_success());
+        assert!(selector.ends[0].2.is_success());
+        let mut direct_parent = vec![];
+        call(&mut direct_parent, op::CALL, original);
+        finish_parent(&mut direct_parent);
+        let mut direct = evm(root, &[(ROOT, direct_parent.into())], None);
+        let baseline = direct
+            .transact_with_inspector(&tx(), &mut Selector::new(root, child))
+            .unwrap()
+            .discard();
+        assert_eq!(result.total_gas_spent, baseline.total_gas_spent);
+        assert!(actual.precompiles().contains(&native));
+        assert!(!actual.precompiles().contains(&CHILD));
         assert!(actual.precompiles().contains(&relocated));
         assert!(!actual.precompiles().contains(&original));
         assert!(
