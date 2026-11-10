@@ -14,7 +14,7 @@ use evm2::{
     version::GasId,
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
     frame_hardfork, monad_version,
 };
 use monad_revm::{
@@ -167,7 +167,7 @@ fn evm(
             AccountInfo::default().with_code(Bytecode::new_legacy(code.clone())),
         );
     }
-    let mut factory = MonadEvmFactory::new(1);
+    let mut factory = MonadEvmBuilder::new(1);
     factory.limits.memory_limit = memory_limit;
     factory.create_evm(spec, MonadBlockEnv::default(), db)
 }
@@ -494,10 +494,7 @@ fn memory_caps_can_be_tightened_and_relaxed_between_frames() {
                 .unwrap()
                 .commit();
             assert!(result.is_success());
-            assert_eq!(
-                selector.ends[0].2.is_success(),
-                !cfg!(feature = "memory_limit") || child == MonadHardfork::MonadEight
-            );
+            assert_eq!(selector.ends[0].2.is_success(), child == MonadHardfork::MonadEight);
             assert_eq!(frame_hardfork(&actual), root);
         }
     }
@@ -665,7 +662,7 @@ fn frame_memory_limits_follow_explicit_runtime_configuration_updates() {
         let mut selector = Selector::new(root, MonadHardfork::MonadEight);
         let result = actual.transact_with_inspector(&tx(), &mut selector).unwrap().discard();
         assert!(result.is_success());
-        assert_eq!(selector.ends[0].2.is_success(), !cfg!(feature = "memory_limit"));
+        assert!(!selector.ends[0].2.is_success());
     }
 }
 

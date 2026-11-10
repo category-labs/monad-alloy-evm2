@@ -13,7 +13,7 @@ use evm2::{
     interpreter::{InstrStop, op},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadTxEnvelope, SYSTEM_ADDRESS,
+    MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, MonadTxEnvelope, SYSTEM_ADDRESS,
     staking::{
         STAKING_ADDRESS,
         abi::gas,
@@ -651,7 +651,7 @@ fn failed_delegation_and_compounding_roll_back_early_logs_and_storage() {
                     db.insert_account_storage(&STAKING_ADDRESS, key, value);
                 }
                 let mut evm =
-                    MonadEvmFactory::new(1).create_evm(spec, MonadBlockEnv::default(), db);
+                    MonadEvmBuilder::new(1).create_evm(spec, MonadBlockEnv::default(), db);
                 let tx = Recovered::new_unchecked(
                     MonadTxEnvelope::Legacy(TxLegacy {
                         to: if nested { contract } else { STAKING_ADDRESS }.into(),
@@ -750,7 +750,7 @@ fn assert_calls_as(
         db.insert_account_storage(&STAKING_ADDRESS, key, value);
         reference_db.insert_account_storage(STAKING_ADDRESS, *key, *value).unwrap();
     }
-    let mut evm = MonadEvmFactory::new(1).create_evm(spec, MonadBlockEnv::default(), db);
+    let mut evm = MonadEvmBuilder::new(1).create_evm(spec, MonadBlockEnv::default(), db);
     let mut reference = monad_context_with_db(reference_db)
         .with_cfg(MonadCfgEnv::new_with_spec(reference_spec).with_chain_id(1))
         .build_monad();

@@ -45,6 +45,39 @@ pub(crate) struct ReserveInspector<'a> {
     pending_steps: Vec<bool>,
 }
 
+/// Composes reserve enforcement around an application's native inspector.
+///
+/// Create a fresh adapter for each ordinary transaction and pass it to native
+/// `transact_with_inspector`. Use [`crate::MonadPrecompiles`] or wrap custom
+/// providers with [`reserve_precompiles`] so failed root precompiles are observed
+/// before rollback. This adapter uses the host's configured hardfork; it does not
+/// require a frame selector or manage synthetic-call commit and discard.
+pub fn reserve_inspector(
+    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
+) -> impl Inspector<MonadEvmTypes> + '_ {
+    ReserveInspector::new(inspector)
+}
+
+/// Observes root reserve violations and protects native addresses in a custom provider.
+///
+/// [`crate::MonadPrecompiles`] already includes these safeguards.
+pub fn reserve_precompiles<P: PrecompileProvider<MonadEvmTypes>>(
+    provider: P,
+) -> impl PrecompileProvider<MonadEvmTypes> {
+    ReservePrecompiles(provider)
+}
+
+pub(crate) fn observe_precompile(
+    host: &mut MonadHost<'_>,
+    message: &Message<MonadEvmTypes>,
+    result: Result<PrecompileOutput, PrecompileError>,
+) -> Result<PrecompileOutput, PrecompileError> {
+    if !matches!(result, Err(PrecompileError::Database(_) | PrecompileError::Fatal(_))) {
+        capture(host, message.depth)?;
+    }
+    result
+}
+
 impl<'a> ReserveInspector<'a> {
     pub(crate) const fn new(inner: Option<&'a mut dyn Inspector<MonadEvmTypes>>) -> Self {
         Self {
@@ -284,11 +317,6 @@ impl<P: PrecompileProvider<MonadEvmTypes>> PrecompileProvider<MonadEvmTypes>
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         let result = self.0.execute(host, message, gas)?;
-        if !matches!(result, Err(PrecompileError::Database(_) | PrecompileError::Fatal(_)))
-            && let Err(error) = capture(host, message.depth)
-        {
-            return Some(Err(PrecompileError::Database(error)));
-        }
-        Some(result)
+        Some(observe_precompile(host, message, result))
     }
 }

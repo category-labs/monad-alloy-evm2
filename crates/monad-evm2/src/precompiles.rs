@@ -4,7 +4,9 @@
 //! EIP-7823 input limits and EIP-7883 pricing. P-256 verification uses EIP-7951
 //! pricing on every supported Monad hardfork.
 
-use crate::reserve_balance::{RESERVE_BALANCE_ADDRESS, run_reserve_balance_precompile};
+use crate::reserve_balance::{
+    RESERVE_BALANCE_ADDRESS, observe_precompile, run_reserve_balance_precompile,
+};
 use crate::staking::{STAKING_ADDRESS, run_staking_precompile};
 use crate::{MonadEvmTypes, MonadHardfork, MonadHost};
 use alloc::vec::Vec;
@@ -113,7 +115,8 @@ impl PrecompileProvider<MonadEvmTypes> for MonadPrecompiles {
         message: &Message<MonadEvmTypes>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        self.inner.execute(host, message, gas)
+        let result = self.inner.execute(host, message, gas)?;
+        Some(observe_precompile(host, message, result))
     }
 }
 
@@ -228,7 +231,7 @@ fn blake2f(
     gas: &mut GasTracker,
 ) -> PrecompileResult {
     // Length validation precedes gas charging; final-flag validation follows it.
-    let input = message.input.as_ref();
+    let input = &message.input[..];
     if input.len() != 213 {
         return Err(PrecompileHalt::Blake2WrongLength.into());
     }
@@ -269,7 +272,7 @@ fn point_evaluation(
 ) -> PrecompileResult {
     gas.spend(MONAD_POINT_EVALUATION_GAS)?;
 
-    let input = message.input.as_ref();
+    let input = &message.input[..];
     if input.len() != 192 {
         return Err(PrecompileHalt::BlobInvalidInputLength.into());
     }

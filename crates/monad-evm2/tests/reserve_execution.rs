@@ -11,7 +11,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileHalt},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHaltReason, MonadHardfork,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHaltReason, MonadHardfork,
     MonadTxEnvelope, ReserveAccount, ReserveBalanceInit,
     reserve_balance::{
         DIPPED_INTO_RESERVE_SELECTOR, MonadCheckpoint, MonadStateSnapshot, RESERVE_BALANCE_ADDRESS,
@@ -34,7 +34,7 @@ fn evm_with_code(spec: MonadHardfork, restricted: bool, code: Bytes) -> MonadEvm
     let mut db = InMemoryDB::default();
     db.insert_account_info(&SENDER, AccountInfo::default().with_balance(U256::from(INITIAL)));
     db.insert_account_info(&TARGET, AccountInfo::default().with_code(Bytecode::new_legacy(code)));
-    let mut evm = MonadEvmFactory::new(1).create_evm(
+    let mut evm = MonadEvmBuilder::new(1).create_evm(
         spec,
         MonadBlockEnv { beneficiary: BENEFICIARY, ..Default::default() },
         db,

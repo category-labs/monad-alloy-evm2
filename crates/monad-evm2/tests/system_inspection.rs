@@ -11,7 +11,7 @@ use evm2::{
     registry::{TxRequest, handler},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadHost,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, MonadHost,
     MonadTxEnvelope, ReserveBalanceInit, SYSTEM_ADDRESS, reserve_balance::reserve_account,
 };
 use std::{
@@ -62,7 +62,7 @@ fn evm(spec: MonadHardfork, stop: u8) -> MonadEvm<'static> {
             .with_code(Bytecode::new_legacy(code.into())),
     );
     db.insert_account_info(&CHILD, AccountInfo::default().with_code(Bytecode::new_legacy(child)));
-    let mut factory = MonadEvmFactory::new(1);
+    let mut factory = MonadEvmBuilder::new(1);
     // Ordinary transactions cannot pass these limits or pay this base fee.
     factory.limits.tx_gas_limit_cap = Some(1);
     factory.create_evm(

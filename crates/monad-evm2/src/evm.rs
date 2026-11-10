@@ -11,7 +11,8 @@ use evm2::{
 
 /// The native host used by Monad instructions, precompiles and inspectors.
 ///
-/// Use [`crate::MonadExecution`] or [`crate::MonadEvm`] for Monad lifecycle handling.
+/// Use [`crate::reserve_balance::reserve_inspector`] for ordinary native transactions.
+/// [`crate::MonadEvm`] adds standalone inspector and synthetic-context handling.
 pub type MonadHost<'a> = Evm<'a, MonadEvmTypes>;
 
 /// Block inputs visible to a Monad EVM.
@@ -56,9 +57,11 @@ pub struct MonadEvmExt {
     /// never transaction-pool admission. See [`crate::protocol`] for validation rules.
     pub protocol_replay: bool,
     pub(crate) protocol_dispatch: Option<Arc<AtomicBool>>,
-    pub(crate) reserve_balance_sync: ReserveBalanceSync,
+    /// Cursor and original account fields used by reserve synchronization.
+    pub reserve_balance_sync: ReserveBalanceSync,
     pub(crate) reserve_execution: crate::reserve_balance::ReserveExecution,
-    pub(crate) memory_pool_offset: u64,
+    /// Memory held by suspended ancestor frames.
+    pub memory_pool_offset: u64,
     pub(crate) system_call: Option<crate::system::SystemCall>,
     pub(crate) frame: crate::frame::FrameContext,
 }
@@ -102,6 +105,11 @@ pub struct MonadMessageResultExt {
 }
 
 impl MonadEvmExt {
+    /// Sets preservation for synthetic calls within an initialized transaction context.
+    pub const fn set_preserve_reserve_balance_tracker(&mut self, preserve: bool) {
+        self.preserve_reserve_balance_tracker = preserve;
+    }
+
     /// Memory in bytes held by suspended ancestor frames.
     pub const fn memory_pool_offset(&self) -> u64 {
         self.memory_pool_offset

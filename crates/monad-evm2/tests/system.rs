@@ -8,7 +8,7 @@ use evm2::{
     interpreter::{Interpreter, Message, MessageResult},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
     apply_epoch_boundary, apply_syscall_on_epoch_change, apply_syscall_reward,
     apply_syscall_snapshot,
     staking::{
@@ -45,7 +45,7 @@ fn db() -> InMemoryDB {
 }
 
 fn evm() -> MonadEvm<'static> {
-    MonadEvmFactory::new(1).create_evm(MonadHardfork::MonadTen, MonadBlockEnv::default(), db())
+    MonadEvmBuilder::new(1).create_evm(MonadHardfork::MonadTen, MonadBlockEnv::default(), db())
 }
 
 fn slot(evm: &mut MonadEvm<'_>, key: U256) -> U256 {
@@ -157,7 +157,7 @@ impl Database for FailingStorageDb {
 
 #[test]
 fn database_failure_aborts_instead_of_reverting_and_clears_prior_writes() {
-    let mut evm = MonadEvmFactory::new(1).create_evm(
+    let mut evm = MonadEvmBuilder::new(1).create_evm(
         MonadHardfork::MonadTen,
         MonadBlockEnv::default(),
         Db::new(FailingStorageDb { inner: db(), fail: true }),
@@ -170,7 +170,7 @@ fn database_failure_aborts_instead_of_reverting_and_clears_prior_writes() {
 
 #[test]
 fn borrowed_inspector_observes_precompile_database_failure_and_retry() {
-    let mut evm = MonadEvmFactory::new(1).create_evm(
+    let mut evm = MonadEvmBuilder::new(1).create_evm(
         MonadHardfork::MonadTen,
         MonadBlockEnv::default(),
         Db::new(FailingStorageDb { inner: db(), fail: true }),

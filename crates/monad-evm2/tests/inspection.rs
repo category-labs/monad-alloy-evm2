@@ -9,7 +9,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHaltReason, MonadHardfork,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHaltReason, MonadHardfork,
     MonadTxEnvelope,
 };
 
@@ -26,7 +26,7 @@ fn evm(spec: MonadHardfork, code: Vec<u8>) -> MonadEvm<'static> {
             AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from(code))),
         );
     }
-    MonadEvmFactory::new(1).create_evm(spec, MonadBlockEnv::default(), db)
+    MonadEvmBuilder::new(1).create_evm(spec, MonadBlockEnv::default(), db)
 }
 
 fn tx(value: u64) -> Recovered<MonadTxEnvelope> {

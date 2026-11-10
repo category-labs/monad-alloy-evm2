@@ -1,6 +1,7 @@
 //! Monad execution on evm2.
 //!
-//! [`MonadEvmFactory`] builds an EVM for a [`MonadHardfork`], block, and database.
+//! [`MonadEvmFactory`] constructs native hosts; [`MonadEvmBuilder`] constructs the
+//! standalone [`MonadEvm`] wrapper with automatic inspector composition.
 //! [`monad_version`] supplies the fork's gas parameters and runtime limits, and
 //! [`MonadLimits`] allows callers to override those limits.
 
@@ -30,7 +31,7 @@ pub mod execution;
 pub use execution::{MonadExecutedTx, MonadExecution};
 
 mod factory;
-pub use factory::MonadEvmFactory;
+pub use factory::{MonadEvmBuilder, MonadEvmFactory};
 
 mod frame;
 pub use frame::frame_hardfork;

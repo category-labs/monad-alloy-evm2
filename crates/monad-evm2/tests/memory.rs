@@ -13,7 +13,7 @@ use evm2::{
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, op},
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmFactory,
+    MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmBuilder,
     MonadEvmTypes, MonadHardfork, MonadTxEnvelope, monad_memory_cost,
 };
 use monad_revm::{
@@ -225,7 +225,7 @@ impl Fixture {
                     .with_code(Bytecode::new_raw(code.clone())),
             );
         }
-        let mut factory = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID);
+        let mut factory = MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID);
         factory.limits.memory_limit = self.memory_limit;
         factory.limits.tx_gas_limit_cap = Some(self.gas);
         let block = MonadBlockEnv { gas_limit: U256::from(self.gas), ..Default::default() };
@@ -263,7 +263,6 @@ impl Fixture {
         }
         let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(MONAD_MAINNET_CHAIN_ID);
         cfg.0.tx_gas_limit_cap = Some(self.gas);
-        #[cfg(feature = "memory_limit")]
         if let Some(limit) = self.memory_limit {
             cfg.0.memory_limit = limit;
         }
@@ -609,7 +608,7 @@ fn configured_limits_apply_to_rounded_allocations() {
         fixture.memory_limit = Some(limit);
         for forks in FORKS {
             let actual = fixture.compare(forks);
-            let fits = !cfg!(feature = "memory_limit") || size.div_ceil(32) as u64 * 32 <= limit;
+            let fits = size.div_ceil(32) as u64 * 32 <= limit;
             assert_eq!(actual.result.is_success(), fits);
             if !fits {
                 assert_eq!(actual.result.stop, InstrStop::MemoryLimitOOG);
@@ -627,7 +626,7 @@ fn eight_mebibytes_is_a_pooled_protocol_cap_from_nine() {
         fixture.memory_limit = Some(MONAD_MEMORY_LIMIT * 2);
         for forks in FORKS.into_iter().skip(1) {
             let actual = fixture.compare(forks);
-            let fits = !cfg!(feature = "memory_limit") || size <= MONAD_MEMORY_LIMIT;
+            let fits = size <= MONAD_MEMORY_LIMIT;
             assert_eq!(actual.result.is_success(), fits);
             if !fits {
                 assert_eq!(actual.result.stop, InstrStop::MemoryLimitOOG);
@@ -651,7 +650,7 @@ fn parent_and_child_memory_share_the_configured_limit_for_every_call_kind() {
             fixture.memory_limit = Some(128);
             for forks in FORKS {
                 let actual = fixture.compare(forks);
-                let fits = !cfg!(feature = "memory_limit") || child_size <= 64;
+                let fits = child_size <= 64;
                 assert_eq!(
                     actual.result.output.as_ref(),
                     U256::from(u8::from(fits)).to_be_bytes::<32>()
@@ -720,9 +719,8 @@ fn nested_calls_count_all_ancestors() {
     fixture.memory_limit = Some(128);
     for forks in FORKS {
         let actual = fixture.compare(forks);
-        let fits = !cfg!(feature = "memory_limit");
-        assert_eq!(actual.result.output.as_ref(), U256::from(u8::from(fits)).to_be_bytes::<32>());
-        assert_eq!(actual.trace.children[0].1.is_success(), fits);
+        assert_eq!(actual.result.output.as_ref(), U256::ZERO.to_be_bytes::<32>());
+        assert!(!actual.trace.children[0].1.is_success());
         assert!(actual.trace.children[1].1.is_success());
     }
 }
@@ -749,7 +747,7 @@ fn initcode_uses_the_same_pool_and_releases_it_after_creation() {
             fixture.memory_limit = Some(128);
             for forks in FORKS {
                 let actual = fixture.compare(forks);
-                let fits = !cfg!(feature = "memory_limit") || size <= 64;
+                let fits = size <= 64;
                 assert_eq!(U256::from_be_slice(&actual.result.output).is_zero(), !fits);
                 assert_eq!(actual.trace.children[0].1.is_success(), fits);
             }

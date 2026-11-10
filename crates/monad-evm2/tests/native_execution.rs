@@ -9,12 +9,13 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvmExt, MonadEvmFactory, MonadEvmTypes, MonadExecution, MonadHaltReason,
-    MonadHardfork, MonadHost, MonadTxEnvelope, ReserveBalanceInit, SYSTEM_ADDRESS, frame_hardfork,
-    monad_tx_registry, monad_version,
+    MonadBlockEnv, MonadEvmBuilder, MonadEvmExt, MonadEvmFactory, MonadEvmTypes, MonadExecution,
+    MonadHaltReason, MonadHardfork, MonadHost, MonadTxEnvelope, ReserveBalanceInit, SYSTEM_ADDRESS,
+    frame_hardfork, monad_tx_registry, monad_version,
     reserve_balance::{
         DIPPED_INTO_RESERVE_SELECTOR, RESERVE_BALANCE_ADDRESS, dipped_into_reserve,
-        rebase_reserve_balance_with_originals, reserve_account, sync_reserve_balance,
+        rebase_reserve_balance_with_originals, reserve_account, reserve_inspector,
+        sync_reserve_balance,
     },
     staking::{STAKING_ADDRESS, storage::global_slots},
     syscall_snapshot_calldata,
@@ -44,13 +45,25 @@ fn host(spec: MonadHardfork, code: &[u8]) -> (Evm<'static, MonadEvmTypes>, Monad
         ExecutionConfig::for_spec_and_version(spec, monad_version(spec, 1)),
         spec,
         MonadBlockEnv { beneficiary: BENEFICIARY, ..Default::default() },
-        monad_tx_registry(),
+        monad_tx_registry(spec),
         database(code),
         execution.precompiles(),
         MonadEvmExt::default(),
     );
     host.ext_mut().chain.parent_senders_and_authorities.insert(SENDER);
     (host, execution)
+}
+
+fn native_host(spec: MonadHardfork, code: &[u8]) -> MonadHost<'static> {
+    let factory = MonadEvmFactory;
+    let mut host = factory.create_evm(
+        spec,
+        factory.version(spec, 1),
+        MonadBlockEnv { beneficiary: BENEFICIARY, ..Default::default() },
+        database(code),
+    );
+    host.ext_mut().chain.parent_senders_and_authorities.insert(SENDER);
+    host
 }
 
 fn tx(value: u64, gas_price: u128) -> Recovered<MonadTxEnvelope> {
@@ -130,6 +143,76 @@ impl Inspector<MonadEvmTypes> for Trace {
 }
 
 #[test]
+fn native_factory_enforces_reserves_without_a_frame_selector() {
+    for spec in MonadHardfork::ALL {
+        for terminal in [op::STOP, op::REVERT, op::INVALID] {
+            for value in [0, 1] {
+                let code = [op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::PUSH0, terminal];
+                let mut host = native_host(spec, &code);
+                let mut trace = Trace::default();
+                let result = host
+                    .transact_with_inspector(
+                        &tx(value, 1),
+                        &mut reserve_inspector(Some(&mut trace)),
+                    )
+                    .unwrap()
+                    .commit();
+                let halt = (value == 1).then_some(MonadHaltReason::ReserveBalanceViolation);
+                assert_eq!(result.ext.halt_reason, halt);
+                assert_eq!(trace.halt, halt);
+                assert_eq!(trace.frame, Some(spec));
+                assert_eq!((trace.steps, trace.step_ends, trace.calls), (1, 1, 1));
+                assert_eq!(result.is_success(), value == 0 && terminal == op::STOP);
+                assert_eq!(result.tx_gas_used(), GAS);
+                assert_eq!(
+                    host.state_mut().account(&SENDER).unwrap().balance(),
+                    U256::from(INITIAL - GAS)
+                );
+                assert_eq!(host.state_mut().account(&SENDER).unwrap().nonce(), 1);
+                assert_eq!(
+                    host.state_mut().account(&BENEFICIARY).unwrap().balance(),
+                    U256::from(GAS)
+                );
+                assert_eq!(host.state_mut().account(&TARGET).unwrap().balance(), U256::ZERO);
+                assert_eq!(
+                    host.state_mut().storage_slot_untracked(&TARGET, &U256::ZERO).unwrap(),
+                    U256::from(u8::from(result.is_success())),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_factory_honors_memory_limits_with_default_features_disabled() {
+    let factory = MonadEvmFactory;
+    for spec in MonadHardfork::ALL {
+        let mut version = factory.version(spec, 1);
+        version.memory_limit = 128 * 1024 * 1024;
+        let config = factory.execution_config(spec, version);
+        assert_eq!(
+            config.version().memory_limit,
+            if spec >= MonadHardfork::MonadNine {
+                monad_evm2::MONAD_MEMORY_LIMIT
+            } else {
+                version.memory_limit
+            }
+        );
+        version.memory_limit = 64;
+        let mut host = factory.create_evm(
+            spec,
+            version,
+            MonadBlockEnv::default(),
+            database(&[op::PUSH0, op::PUSH1, 64, op::MSTORE, op::STOP]),
+        );
+        let result =
+            host.transact_with_inspector(&tx(0, 0), &mut reserve_inspector(None)).unwrap().commit();
+        assert!(!result.is_success());
+        assert_eq!(result.stop, InstrStop::MemoryLimitOOG);
+    }
+}
+
+#[test]
 fn native_observer_enforces_reserves_before_success_and_failure_rollback() {
     for spec in MonadHardfork::ALL {
         for terminal in [op::STOP, op::REVERT, op::INVALID] {
@@ -171,7 +254,7 @@ fn native_entrypoint_rejects_a_missing_observer_without_committing_fees() {
 
 #[test]
 fn native_precompile_observation_retains_reserve_rejection_on_failure() {
-    let (mut host, execution) = host(MonadHardfork::MonadTen, &[]);
+    let mut host = native_host(MonadHardfork::MonadTen, &[]);
     let precompile = Address::with_last_byte(9);
     let tx = Recovered::new_unchecked(
         MonadTxEnvelope::Legacy(TxLegacy {
@@ -184,7 +267,7 @@ fn native_precompile_observation_retains_reserve_rejection_on_failure() {
         SENDER,
     );
     let result = {
-        let mut observer = execution.inspector(host.config_spec_id(), None);
+        let mut observer = reserve_inspector(None);
         host.transact_with_inspector(&tx, &mut observer).unwrap().commit()
     };
     assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
@@ -311,7 +394,7 @@ fn nested_native_hosts_inherit_reserves_without_sharing_frame_selection() {
 
 #[test]
 fn native_system_calls_and_protocol_replay_keep_the_enclosing_tracker() {
-    let (mut host, execution) = MonadEvmFactory::new(1).create_host(
+    let (mut host, execution) = MonadEvmBuilder::new(1).create_host(
         MonadHardfork::MonadTen,
         MonadBlockEnv::default(),
         database(&[op::PUSH1, 7, op::PUSH0, op::SSTORE, op::STOP]),
@@ -345,7 +428,7 @@ fn native_system_calls_and_protocol_replay_keep_the_enclosing_tracker() {
         }),
         SYSTEM_ADDRESS,
     );
-    assert!(host.transact(&protocol).is_err());
+    assert!(host.transact(&protocol).unwrap().discard().is_success());
     let result = execution.transact(&mut host, &protocol, Some(&mut trace)).unwrap().commit();
     assert!(result.is_success());
     assert_eq!(result.tx_gas_used(), 0);

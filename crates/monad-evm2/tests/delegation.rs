@@ -13,7 +13,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, op},
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork,
+    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork,
     MonadTxEnvelope,
 };
 use monad_revm::{
@@ -112,7 +112,7 @@ fn execute(
         );
     }
     let mut evm =
-        MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db);
+        MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db);
     let tx = Recovered::new_unchecked(tx, SENDER);
     let mut trace = Trace::default();
     let result = if inspect {

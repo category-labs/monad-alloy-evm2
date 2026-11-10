@@ -14,9 +14,21 @@ use evm2::{
 
 /// Transaction journal position after fee charging and authorization processing.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ReserveBalanceSync {
+pub struct ReserveBalanceSync {
     base: usize,
     originals: HashMap<Address, (U256, B256)>,
+}
+
+impl ReserveBalanceSync {
+    /// Starts a journal cursor with no cached transaction-start account fields.
+    ///
+    /// For state replacement during execution, use [`rebase_reserve_balance`] or
+    /// [`rebase_reserve_balance_with_originals`] to update the tracker and its
+    /// original account fields together.
+    pub fn begin(&mut self, journal_len: usize) {
+        self.base = journal_len;
+        self.originals.clear();
+    }
 }
 
 /// Reads the current account view and the accepted transaction-start baseline.

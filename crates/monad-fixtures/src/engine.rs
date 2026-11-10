@@ -10,7 +10,7 @@ use evm2::{
 };
 use eyre::{Result, WrapErr};
 use monad_evm2::{
-    MonadBlockEnv, MonadChainContext, MonadEvmFactory, MonadHardfork, MonadTxEnvelope,
+    MonadBlockEnv, MonadChainContext, MonadEvmBuilder, MonadHardfork, MonadTxEnvelope,
 };
 use monad_revm::{
     MonadBuilder, MonadCfgEnv, MonadChainContext as ReferenceChain,
@@ -93,7 +93,7 @@ pub(crate) fn actual(
         blob_basefee: U256::ONE,
         ..Default::default()
     };
-    let mut evm = MonadEvmFactory::new(context.chain_id).create_evm(context.spec, block, &mut *db);
+    let mut evm = MonadEvmBuilder::new(context.chain_id).create_evm(context.spec, block, &mut *db);
     evm.ext_mut().chain = context.chain.clone();
     let executed = match request {
         Request::Transaction { tx, sender } => {

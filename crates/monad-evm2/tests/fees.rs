@@ -16,7 +16,7 @@ use evm2::{
     registry::HandlerError,
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork,
+    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork,
     MonadTxEnvelope, SYSTEM_ADDRESS, SystemSenderIsAuthority,
 };
 use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
@@ -55,7 +55,7 @@ fn evm(spec: MonadHardfork, basefee: u64, db: InMemoryDB) -> MonadEvm<'static> {
         beneficiary: BENEFICIARY,
         ..Default::default()
     };
-    MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, block, db)
+    MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, block, db)
 }
 
 fn account(evm: &mut MonadEvm<'_>, address: Address) -> AccountInfo {

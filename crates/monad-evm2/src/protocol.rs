@@ -6,6 +6,9 @@
 //! and price. Replay checks the chain ID and nonce, increments the nonce, mints
 //! any block reward, and executes an inspected system call with zero receipt gas.
 //! A failed syscall rejects the transaction, including the nonce and mint.
+//! Native `MonadHost::transact` and the standalone wrapper share this handler.
+//! It isolates reserve and frame bookkeeping, restoring the enclosing context
+//! before the native state handle is returned and during error unwinding.
 //!
 //! The caller must authenticate the reserved sender before constructing a
 //! recovered envelope. This module does not recover protocol signatures, validate
@@ -13,7 +16,7 @@
 //! Keep replay disabled for transaction-pool admission and ordinary execution.
 
 use crate::{
-    MonadEvmTypes, MonadHost, MonadTxEnvelope, SYSTEM_ADDRESS,
+    MonadEvmExt, MonadEvmTypes, MonadHost, MonadTxEnvelope, SYSTEM_ADDRESS,
     staking::{STAKING_ADDRESS, interface::IMonadStaking::*},
     staking_system_tx, syscall_on_epoch_change_calldata, syscall_reward_calldata,
     syscall_snapshot_calldata,
@@ -21,7 +24,7 @@ use crate::{
 use alloy_consensus::{Typed2718, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use alloy_sol_types::SolCall;
-use core::{fmt, sync::atomic::Ordering};
+use core::{fmt, mem, sync::atomic::Ordering};
 use evm2::{
     TxResult,
     evm::SystemTx,
@@ -95,14 +98,12 @@ impl ProtocolSystemCall {
         self,
         host: &mut MonadHost<'_>,
     ) -> HandlerResult<TxResult<MonadEvmTypes>> {
-        // Require the execution hooks' isolated context and scoped inspector lifecycle.
-        let dispatched = host
-            .ext()
-            .protocol_dispatch
-            .as_ref()
-            .ok_or_else(|| HandlerError::external(crate::execution::MissingMonadLifecycle))?;
-        dispatched.store(true, Ordering::Relaxed);
-        let mut result = host.execute_system_call(self.system_tx())?;
+        // Standalone execution can verify that a customized registry retained this handler.
+        if let Some(dispatched) = &host.ext().protocol_dispatch {
+            dispatched.store(true, Ordering::Relaxed);
+        }
+        let scope = ProtocolScope::new(host);
+        let mut result = scope.host.execute_system_call(self.system_tx())?;
         if !result.is_success() {
             return Err(ProtocolSystemCallError::ExecutionFailed {
                 stop: result.stop,
@@ -115,6 +116,33 @@ impl ProtocolSystemCall {
         result.refunded = 0;
         result.floor_gas = 0;
         Ok(result)
+    }
+}
+
+/// Isolates derived transaction state independently of the caller's lifecycle.
+struct ProtocolScope<'e, 'a> {
+    host: &'e mut MonadHost<'a>,
+    before: MonadEvmExt,
+}
+
+impl<'e, 'a> ProtocolScope<'e, 'a> {
+    fn new(host: &'e mut MonadHost<'a>) -> Self {
+        let before = mem::take(host.ext_mut());
+        let mut frame = before.frame.clone();
+        frame.reset();
+        *host.ext_mut() = MonadEvmExt {
+            chain: before.chain.clone(),
+            frame,
+            protocol_replay: true,
+            ..Default::default()
+        };
+        Self { host, before }
+    }
+}
+
+impl Drop for ProtocolScope<'_, '_> {
+    fn drop(&mut self) {
+        mem::swap(self.host.ext_mut(), &mut self.before);
     }
 }
 

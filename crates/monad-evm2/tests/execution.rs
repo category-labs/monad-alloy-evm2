@@ -13,7 +13,7 @@ use evm2::{
     registry::HandlerError,
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadEvmTypes,
+    MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes,
     MonadHardfork, MonadTxEnvelope,
 };
 use monad_revm::{
@@ -91,7 +91,7 @@ fn run_contract(
     let expected = reference.transact(reference_tx).unwrap().result;
 
     let block = MonadBlockEnv { number, ..Default::default() };
-    let mut evm = MonadEvmFactory::new(chain_id).create_evm(spec, block, evm2_db(code));
+    let mut evm = MonadEvmBuilder::new(chain_id).create_evm(spec, block, evm2_db(code));
     assert_eq!(evm.config_spec_id(), spec);
     assert_eq!(evm.spec_id(), spec.into_eth_spec());
     let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), CALLER);
@@ -141,7 +141,7 @@ fn clz_activates_at_monad_nine_in_both_engines() {
 #[test]
 fn factory_enforces_the_requested_transaction_gas_cap() {
     let cap = 50_000;
-    let mut factory = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID);
+    let mut factory = MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID);
     factory.limits.tx_gas_limit_cap = Some(cap);
     let mut db = evm2_db(Bytes::new());
     let mut evm = factory.create_evm(MonadHardfork::MonadTen, MonadBlockEnv::default(), &mut db);

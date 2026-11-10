@@ -12,7 +12,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork,
+    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork,
     MonadTxEnvelope,
     page::{
         BASE_COST, PAGE_SHIFT, PAGE_WRITE_COST, STATE_GROWTH_COST, StoragePageKey, WORDS_PER_PAGE,
@@ -136,7 +136,7 @@ impl Fixture {
         for (address, slot, value) in &self.storage {
             db.insert_account_storage(address, slot, value);
         }
-        MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db)
+        MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db)
     }
 
     fn tx(&self, nonce: u64) -> Recovered<MonadTxEnvelope> {
@@ -814,7 +814,7 @@ fn unaffordable_cold_accesses_do_not_read_the_database() {
             );
             let mut fixture = Fixture::new(code);
             fixture.gas = 21_000 + if writing { 4 } else { 2 } + 8_099 + u64::from(affordable);
-            let mut evm = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(
+            let mut evm = MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(
                 MonadHardfork::MonadTen,
                 MonadBlockEnv::default(),
                 Db::new(&mut db),

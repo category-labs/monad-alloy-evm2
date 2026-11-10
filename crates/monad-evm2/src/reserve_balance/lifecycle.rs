@@ -60,7 +60,7 @@ impl MonadStateSnapshot {
 mod tests {
     use super::*;
     use crate::{
-        MonadBlockEnv, MonadEvmFactory, MonadHardfork,
+        MonadBlockEnv, MonadEvmBuilder, MonadHardfork,
         page::{PageAccess, StoragePageKey},
     };
     use alloy_primitives::{Address, U256};
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn rollback_and_snapshot_restore_memory_pool_and_storage_pages_together() {
-        let mut evm = MonadEvmFactory::new(1).create_evm(
+        let mut evm = MonadEvmBuilder::new(1).create_evm(
             MonadHardfork::MonadTen,
             MonadBlockEnv::default(),
             InMemoryDB::default(),

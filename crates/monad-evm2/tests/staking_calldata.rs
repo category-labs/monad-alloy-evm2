@@ -12,7 +12,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileHalt},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
+    MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, SYSTEM_ADDRESS,
     staking::{
         STAKING_ADDRESS, StorageReader,
         abi::gas,
@@ -89,7 +89,7 @@ fn run(
 ) -> (Outcome, usize) {
     match route {
         Route::Native => {
-            let mut evm = MonadEvmFactory::new(1).create_evm(
+            let mut evm = MonadEvmBuilder::new(1).create_evm(
                 MonadHardfork::MonadTen,
                 MonadBlockEnv::default(),
                 InMemoryDB::default(),

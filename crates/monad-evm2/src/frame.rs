@@ -38,7 +38,6 @@ impl FrameContext {
     }
 }
 
-#[cfg(feature = "memory_limit")]
 pub(crate) fn memory_limit(host: &MonadHost<'_>) -> u64 {
     let requested = host.ext().frame.memory_limit.unwrap_or(host.version().memory_limit);
     crate::monad_memory_limit(frame_hardfork(host), requested)

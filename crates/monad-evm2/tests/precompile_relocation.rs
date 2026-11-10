@@ -9,7 +9,7 @@ use evm2::{
     precompiles::{MovePrecompileError, Precompile, PrecompileId, PrecompileResult},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadHost, MonadPrecompiles,
+    MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, MonadHost, MonadPrecompiles,
     monad_precompiles, reserve_balance::RESERVE_BALANCE_ADDRESS, staking::STAKING_ADDRESS,
     syscall_snapshot_tx,
 };
@@ -70,7 +70,7 @@ fn crypto_moves_retain_execution_identity_and_warmth() {
         provider.warm_addresses(&mut warm);
         assert!(warm.is_warm(&DESTINATION));
         assert!(!warm.is_warm(&IDENTITY));
-        let mut evm = MonadEvmFactory::new(1).create_evm(
+        let mut evm = MonadEvmBuilder::new(1).create_evm(
             spec,
             MonadBlockEnv::default(),
             InMemoryDB::default(),
@@ -97,7 +97,7 @@ fn identity(
 fn custom_provider_installation_retains_native_address_guards() {
     for spec in MonadHardfork::ALL {
         for mode in 0..5 {
-            let mut evm = MonadEvmFactory::new(1).create_evm(
+            let mut evm = MonadEvmBuilder::new(1).create_evm(
                 spec,
                 MonadBlockEnv::default(),
                 InMemoryDB::default(),

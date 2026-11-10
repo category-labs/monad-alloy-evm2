@@ -259,10 +259,7 @@ fn memory_limits_survive_hardfork_changes() {
     {
         let limits = MonadLimits { memory_limit: Some(configured), ..Default::default() };
         let mut cfg = MonadCfgEnv::new();
-        #[cfg(feature = "memory_limit")]
-        {
-            cfg.0.memory_limit = configured;
-        }
+        cfg.0.memory_limit = configured;
         for (spec, reference) in FORKS.into_iter().chain(FORKS.into_iter().rev()) {
             cfg.0.spec = reference;
             let version = limits.version(spec, MONAD_MAINNET_CHAIN_ID);

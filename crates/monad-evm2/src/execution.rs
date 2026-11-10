@@ -1,4 +1,4 @@
-//! Lifecycle and inspector hooks for embedders that own a native evm2 host.
+//! Standalone inspector composition and transaction-context lifecycle.
 //!
 //! [`MonadExecution`] owns the per-host frame selector and supplies the same
 //! transaction handling used by [`crate::MonadEvm`]. The embedder retains the
@@ -8,9 +8,9 @@
 //! use alloy_consensus::{TxLegacy, transaction::Recovered};
 //! use alloy_primitives::Address;
 //! use evm2::{evm::InMemoryDB, inspector::NoopInspector};
-//! use monad_evm2::{MonadBlockEnv, MonadEvmFactory, MonadHardfork, MonadTxEnvelope};
+//! use monad_evm2::{MonadBlockEnv, MonadEvmBuilder, MonadHardfork, MonadTxEnvelope};
 //!
-//! let (mut host, execution) = MonadEvmFactory::new(143).create_host(
+//! let (mut host, execution) = MonadEvmBuilder::new(143).create_host(
 //!     MonadHardfork::MonadTen,
 //!     MonadBlockEnv::default(),
 //!     InMemoryDB::default(),
@@ -30,34 +30,26 @@
 //! # Ok::<(), evm2::registry::HandlerError>(())
 //! ```
 //!
-//! Embedders with their own factories can construct [`MonadExecution::new`],
-//! use [`crate::monad_tx_registry`] and install [`MonadExecution::precompiles`]
-//! in a native EVM. Keep one hook instance per host, outside extension snapshots.
-//! When changing execution configuration or providers, use the hook setters so
-//! frame selection and root precompile observation remain installed.
+//! Native embedders can instead use [`crate::MonadEvmFactory`] with
+//! [`crate::reserve_balance::reserve_inspector`] and [`crate::MonadPrecompiles`].
+//! That path follows the native host's configured hardfork and leaves snapshots,
+//! nested state acceptance and synthetic-context resolution to the embedder.
+//! Protocol replay isolates context inside the transaction handler on both paths.
 //!
-//! Foundry-style state operations map to these boundaries:
-//! - Before changing accounts outside execution, call
-//!   [`crate::reserve_balance::sync_reserve_balance`].
-//! - After replacing state, call [`crate::reserve_balance::rebase_reserve_balance`].
-//!   For persistent accounts accepted into a new fork, pass their transaction-start
-//!   fields to [`crate::reserve_balance::rebase_reserve_balance_with_originals`].
-//!   Propagate database errors rather than continuing with a stale tracker.
-//! - Restore native state with matching extension state. Within a running frame,
-//!   [`MonadEvmExt::replace_while_executing`] retains the live execution bookkeeping.
-//! - Give each isolated host its own hooks and copy the enclosing extension with
-//!   `preserve_reserve_balance_tracker` enabled. Use [`MonadExecution::transact`]
-//!   and resolve its [`MonadExecutedTx`] before reusing the host. If detaching,
-//!   capture [`MonadExecutedTx::preserved_context`] first and accept that context
-//!   together with the state changes. The enclosing transaction enforces reserves.
-//! - Route native system calls through [`MonadExecution::system_call`] and trusted
-//!   protocol envelopes through [`MonadExecution::transact`]. Both isolate context.
+//! [`MonadExecution`] supplies the standalone frame selector and synthetic-call
+//! lifecycle. Keep one instance per host, outside cloneable extension snapshots.
+//! Each nested host needs its own instance and provider. The low-level
+//! [`MonadExecution::inspector`] method composes frame selection with reserves but
+//! does not resolve synthetic context; use [`MonadExecution::transact`] for that.
+//! Before detaching synthetic state, capture [`MonadExecutedTx::preserved_context`]
+//! and accept it together with the detached state.
 //!
-//! The low-level [`MonadExecution::inspector`] adapter also supports ordinary
-//! native `transact_with_inspector` calls. It supplies observation only; use the
-//! lifecycle methods for synthetic calls and protocol replay. These hooks do not
-//! implement Foundry's factory or execution traits; the consumer must wire every
-//! execution entrypoint, including nested transactions and simulations.
+//! Synchronize reserves before out-of-band account changes and rebase after state
+//! replacement. [`crate::reserve_balance::rebase_reserve_balance_with_originals`]
+//! retains transaction-start fields for persistent accounts carried into another
+//! fork, including accounts first debited later. Propagate database errors.
+//! [`MonadEvmExt::replace_while_executing`] restores matching context while
+//! retaining memory, frame selection and enforcement owned by active execution.
 
 use crate::frame::{FrameInspector, FramePrecompiles};
 use crate::reserve_balance::{ReserveInspector, ReservePrecompiles, end_reserve_balance_tx};
@@ -87,7 +79,7 @@ use evm2::{
 /// Keep one instance alongside each host. Its frame selector is shared with that
 /// host's precompiles, outside cloneable extension snapshots. Create a fresh
 /// instance and provider for each nested host; copy only [`MonadEvmExt`].
-/// [`crate::MonadEvmFactory::create_host`] constructs this pair, while
+/// [`crate::MonadEvmBuilder::create_host`] constructs this pair, while
 /// [`crate::MonadEvm`] owns the same pair for standalone use.
 ///
 /// Transaction and system-call methods borrow the caller's inspector for execution
@@ -111,7 +103,7 @@ impl MonadExecution {
     /// Do not share it with another host or replace it through the native host's
     /// setters; use [`Self::set_precompiles`] or [`Self::set_execution_config`].
     pub fn precompiles(&self) -> impl PrecompileProvider<MonadEvmTypes> + use<> {
-        ReservePrecompiles(FramePrecompiles::new(self.frame_selection.clone()))
+        FramePrecompiles::new(self.frame_selection.clone())
     }
 
     /// Composes Monad's frame and reserve observers around a user inspector.
@@ -297,17 +289,6 @@ impl fmt::Display for MissingSystemCallHandler {
 
 impl core::error::Error for MissingSystemCallHandler {}
 
-#[derive(Debug)]
-pub(crate) struct MissingMonadLifecycle;
-
-impl fmt::Display for MissingMonadLifecycle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Monad protocol replay requires MonadExecution lifecycle hooks")
-    }
-}
-
-impl core::error::Error for MissingMonadLifecycle {}
-
 fn transact<'e, 'a>(
     host: &'e mut MonadHost<'a>,
     tx: &Recovered<MonadTxEnvelope>,
@@ -347,8 +328,7 @@ fn replay_protocol<'e, 'a>(
 ) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
     let dispatched = Arc::new(AtomicBool::new(false));
     let executed = {
-        let scope = PreservedScope::isolated(host);
-        scope.host.ext_mut().protocol_replay = true;
+        let scope = PreservedScope::new(host);
         scope.host.ext_mut().protocol_dispatch = Some(dispatched.clone());
         let mut noop = NoopInspector::default();
         let mut observer = FrameInspector::new(

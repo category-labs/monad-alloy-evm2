@@ -14,7 +14,7 @@ use evm2::{
     precompiles::{PrecompileHalt, PrecompileResult},
 };
 use monad_evm2::{
-    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork,
+    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork,
     MonadTxEnvelope, monad_precompiles,
 };
 use monad_revm::{
@@ -60,7 +60,7 @@ fn address(value: u16) -> Address {
 }
 
 fn evm(spec: MonadHardfork) -> MonadEvm<'static> {
-    MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(
+    MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(
         spec,
         MonadBlockEnv::default(),
         InMemoryDB::default(),
@@ -97,7 +97,7 @@ fn transact(
     let mut db = InMemoryDB::default();
     db.insert_account_info(&CONTRACT, AccountInfo::default().with_code(Bytecode::new_legacy(code)));
     let mut evm =
-        MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db);
+        MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db);
     let tx = TxLegacy { to: TxKind::Call(target), input, gas_limit: TX_GAS, ..Default::default() };
     evm.call_tx(&Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), SENDER)).unwrap()
 }

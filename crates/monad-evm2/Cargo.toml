@@ -23,20 +23,20 @@ evm2-macros.workspace = true
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-monad-revm = { workspace = true, features = ["std"] }
+monad-revm = { workspace = true, features = ["std", "memory_limit"] }
 revm = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 
 [features]
-default = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
 std = ["evm2/std", "serde?/std"]
 serde = ["dep:serde"]
 c-kzg = ["evm2/c-kzg"]
 secp256k1 = ["evm2/secp256k1"]
 portable = ["evm2/portable"]
 blst = ["evm2/blst"]
-# Keep the test reference's memory-limit feature in sync.
-memory_limit = ["monad-revm/memory_limit"]
+# Compatibility with callers that previously enabled memory limits explicitly.
+memory_limit = []
 
 [lints]
 workspace = true

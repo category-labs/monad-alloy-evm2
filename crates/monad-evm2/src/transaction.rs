@@ -47,10 +47,13 @@ impl core::error::Error for SystemSenderIsAuthority {}
 
 /// Returns Monad's transaction handlers for a native evm2 host.
 ///
-/// Rules follow the host's configured hardfork. Pair this registry with
-/// [`crate::MonadExecution`]'s inspector and precompile hooks; ordinary execution
-/// rejects calls that omit the mandatory reserve observer.
-pub fn monad_tx_registry() -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
+/// Rules follow the host's configured hardfork. Pair ordinary execution with
+/// [`crate::reserve_balance::reserve_inspector`] and [`crate::MonadPrecompiles`].
+/// Execution rejects ordinary calls that omit the reserve observer. Trusted
+/// protocol replay isolates its context within the handler and needs no adapter.
+pub fn monad_tx_registry(
+    _spec: MonadHardfork,
+) -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
     let mut registry = TxRegistry::new();
     for ty in [TxType::Legacy, TxType::Eip2930, TxType::Eip1559, TxType::Eip4844, TxType::Eip7702] {
         let id = ty as u8;

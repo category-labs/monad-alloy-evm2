@@ -6,7 +6,7 @@ use alloy_primitives::{Address, U256};
 use common::FORKS;
 use evm2::evm::InMemoryDB;
 use monad_evm2::{
-    MonadBlockEnv, MonadChainContext, MonadEvmFactory, MonadHardfork, ReserveAccount,
+    MonadBlockEnv, MonadChainContext, MonadEvmBuilder, MonadHardfork, ReserveAccount,
     ReserveBalanceInit, default_max_reserve_balance, reserve_balance::DEFAULT_RESERVE_BALANCE,
 };
 use monad_revm::{
@@ -263,7 +263,7 @@ fn transaction_inputs_match_the_release_sender_fee_allowance() {
 #[test]
 fn evm_extension_holds_caller_supplied_block_history() {
     for (spec, _) in FORKS {
-        let mut evm = MonadEvmFactory::new(143).create_evm(
+        let mut evm = MonadEvmBuilder::new(143).create_evm(
             spec,
             MonadBlockEnv::default(),
             InMemoryDB::default(),

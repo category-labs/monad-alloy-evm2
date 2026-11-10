@@ -13,9 +13,9 @@ use evm2::{
     registry::{HandlerError, TxRequest, handler},
 };
 use monad_evm2::{
-    MonadBlockEnv, MonadEvm, MonadEvmFactory, MonadEvmTypes, MonadHardfork, MonadHost,
-    MonadTxEnvelope, ProtocolSystemCallError as Error, ReserveBalanceInit, SYSTEM_ADDRESS,
-    protocol_system_call,
+    MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmFactory, MonadEvmTypes, MonadHardfork,
+    MonadHost, MonadTxEnvelope, ProtocolSystemCallError as Error, ReserveBalanceInit,
+    SYSTEM_ADDRESS, protocol_system_call,
     reserve_balance::reserve_account,
     staking::{
         STAKING_ADDRESS,
@@ -33,7 +33,7 @@ const CHAIN_ID: u64 = 143;
 const AUTHOR: Address = Address::repeat_byte(0x55);
 const USER: Address = Address::repeat_byte(0x11);
 
-fn evm(spec: MonadHardfork) -> MonadEvm<'static> {
+fn database() -> InMemoryDB {
     let mut db = InMemoryDB::default();
     db.insert_account_info(&STAKING_ADDRESS, AccountInfo::default().with_balance(MON));
     db.insert_account_info(&USER, AccountInfo::default().with_balance(MON));
@@ -48,9 +48,26 @@ fn evm(spec: MonadHardfork) -> MonadEvm<'static> {
     ] {
         db.insert_account_storage(&STAKING_ADDRESS, &key, &value);
     }
-    let mut evm = MonadEvmFactory::new(CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), db);
+    db
+}
+
+fn evm(spec: MonadHardfork) -> MonadEvm<'static> {
+    let mut evm =
+        MonadEvmBuilder::new(CHAIN_ID).create_evm(spec, MonadBlockEnv::default(), database());
     evm.ext_mut().protocol_replay = true;
     evm
+}
+
+fn native_evm(spec: MonadHardfork) -> MonadHost<'static> {
+    let factory = MonadEvmFactory;
+    let mut host = factory.create_evm(
+        spec,
+        factory.version(spec, CHAIN_ID),
+        MonadBlockEnv::default(),
+        database(),
+    );
+    host.ext_mut().protocol_replay = true;
+    host
 }
 
 fn legacy(nonce: u64, value: U256, input: Bytes) -> TxLegacy {
@@ -76,7 +93,7 @@ fn error(error: HandlerError) -> Error {
     error.external_ref::<Error>().unwrap_or_else(|| panic!("unexpected error: {error}")).clone()
 }
 
-fn balances(evm: &mut MonadEvm<'_>) -> (u64, U256, U256) {
+fn balances(evm: &mut MonadHost<'_>) -> (u64, U256, U256) {
     let sender =
         evm.state_mut().account_info_untracked(&SYSTEM_ADDRESS).unwrap().unwrap_or_default();
     let staking =
@@ -84,7 +101,7 @@ fn balances(evm: &mut MonadEvm<'_>) -> (u64, U256, U256) {
     (sender.nonce, sender.balance, staking)
 }
 
-fn reward_slot(evm: &mut MonadEvm<'_>) -> U256 {
+fn reward_slot(evm: &mut MonadHost<'_>) -> U256 {
     evm.state_mut()
         .storage_slot_untracked(
             &STAKING_ADDRESS,
@@ -336,7 +353,7 @@ fn failed_reward_restores_nonce_mint_storage_and_allows_retry() {
     }
 }
 
-fn preserve(evm: &mut MonadEvm<'_>) {
+fn preserve(evm: &mut MonadHost<'_>) {
     evm.ext_mut().chain.parent_senders_and_authorities.insert(USER);
     let chain = evm.ext().chain.clone();
     let sender = reserve_account(evm, USER).unwrap();
@@ -351,6 +368,94 @@ fn preserve(evm: &mut MonadEvm<'_>) {
         sender_account: Some(&sender),
     });
     evm.ext_mut().preserve_reserve_balance_tracker = true;
+}
+
+#[test]
+fn native_protocol_replay_preserves_context_for_every_state_resolution() {
+    for spec in MonadHardfork::ALL {
+        for mode in 0..5 {
+            let mut host = native_evm(spec);
+            preserve(&mut host);
+            host.ext_mut().memory_pool_offset = 64;
+            let before = host.ext().clone();
+            let calls = Rc::new(Cell::new(0));
+            host.set_inspector(Counter(calls.clone()));
+            let tx = recovered(reward(0));
+            host.validate_tx(&tx).unwrap();
+            assert_eq!(balances(&mut host), (0, U256::ZERO, MON));
+            let pending = host.transact(&tx).unwrap();
+            assert_zero_gas(pending.result());
+            match mode {
+                0 => drop(pending),
+                1 => {
+                    assert_zero_gas(&pending.discard());
+                }
+                2 => {
+                    let detached = pending.detach();
+                    assert_eq!(balances(&mut host), (0, U256::ZERO, MON));
+                    host.commit_source(&detached.pending_state);
+                }
+                3 => {
+                    assert_zero_gas(&pending.commit_to(&mut BlockStateAccumulator::default()));
+                }
+                _ => {
+                    assert_zero_gas(&pending.commit());
+                }
+            }
+            assert_eq!(calls.get(), 1);
+            assert_eq!(host.ext().reserve_balance, before.reserve_balance);
+            assert_eq!(host.ext().chain, before.chain);
+            assert_eq!(host.ext().memory_pool_offset, 64);
+            assert!(host.ext().preserve_reserve_balance_tracker && host.ext().protocol_replay);
+            let committed = mode >= 2;
+            assert_eq!(
+                balances(&mut host),
+                (u64::from(committed), U256::ZERO, MON * U256::from(1 + u8::from(committed)))
+            );
+        }
+    }
+}
+
+#[test]
+fn native_failed_and_interrupted_replay_restore_context_and_prestate() {
+    for mode in 0..3 {
+        let mut host = native_evm(MonadHardfork::MonadTen);
+        preserve(&mut host);
+        let before = host.ext().clone();
+        if mode == 0 {
+            let tx = recovered(legacy(
+                0,
+                MON,
+                syscallRewardCall { blockAuthor: USER }.abi_encode().into(),
+            ));
+            assert!(matches!(
+                error(host.transact(&tx).unwrap_err()),
+                Error::ExecutionFailed { .. }
+            ));
+        } else {
+            let interrupted = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                host.transact_with_inspector(
+                    &recovered(reward(0)),
+                    &mut Interrupt { panic: mode == 2 },
+                )
+                .map(|tx| tx.commit())
+            }));
+            if mode == 2 {
+                assert!(interrupted.is_err());
+            } else {
+                assert!(matches!(
+                    error(interrupted.unwrap().unwrap_err()),
+                    Error::ExecutionFailed { .. }
+                ));
+            }
+        }
+        assert_eq!(balances(&mut host), (0, U256::ZERO, MON));
+        assert_eq!(reward_slot(&mut host), U256::ZERO);
+        assert_eq!(host.ext().reserve_balance, before.reserve_balance);
+        assert_eq!(host.ext().chain, before.chain);
+        assert!(host.ext().preserve_reserve_balance_tracker && host.ext().protocol_replay);
+        assert_zero_gas(&host.transact(&recovered(reward(0))).unwrap().commit());
+    }
 }
 
 #[test]
@@ -511,10 +616,10 @@ fn replay_mode_retains_ordinary_reserve_enforcement() {
 }
 
 #[test]
-fn replay_requires_lifecycle_hooks_and_monad_transaction_handler() {
+fn native_replay_works_and_standalone_checks_its_transaction_handler() {
     let mut evm = evm(MonadHardfork::MonadTen);
     let tx = recovered(reward(0));
-    assert!(MonadHost::transact(&mut evm, &tx).is_err());
+    assert_zero_gas(&MonadHost::transact(&mut evm, &tx).unwrap().discard());
     assert_eq!(balances(&mut evm), (0, U256::ZERO, MON));
     let original = evm.registry().clone();
     let mut registry = original.clone();

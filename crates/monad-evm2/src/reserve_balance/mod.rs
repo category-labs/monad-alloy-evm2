@@ -7,14 +7,17 @@ pub use precompile::{
 };
 
 mod sync;
-pub(crate) use sync::{ReserveBalanceSync, begin_reserve_balance_tx, end_reserve_balance_tx};
 pub use sync::{
-    dipped_into_reserve, rebase_reserve_balance, rebase_reserve_balance_with_originals,
-    reserve_account, sync_reserve_balance,
+    ReserveBalanceSync, dipped_into_reserve, rebase_reserve_balance,
+    rebase_reserve_balance_with_originals, reserve_account, sync_reserve_balance,
 };
+pub(crate) use sync::{begin_reserve_balance_tx, end_reserve_balance_tx};
 
 mod execution;
-pub(crate) use execution::{ReserveExecution, ReserveInspector, ReservePrecompiles};
+pub(crate) use execution::{
+    ReserveExecution, ReserveInspector, ReservePrecompiles, observe_precompile,
+};
+pub use execution::{reserve_inspector, reserve_precompiles};
 
 mod lifecycle;
 pub use lifecycle::{MonadCheckpoint, MonadStateSnapshot};

@@ -19,11 +19,11 @@ documentation.
 Import the runtime crate as `monad_evm2`:
 
 ```rust
-use monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmFactory, MonadHardfork};
+use monad_evm2::{MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmBuilder, MonadHardfork};
 use evm2::evm::InMemoryDB;
 
-let factory = MonadEvmFactory::new(MONAD_MAINNET_CHAIN_ID);
-let evm = factory.create_evm(
+let builder = MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID);
+let evm = builder.create_evm(
     MonadHardfork::MonadTen,
     MonadBlockEnv::default(),
     InMemoryDB::default(),
@@ -34,9 +34,11 @@ The [runtime documentation](crates/monad-evm2/README.md) describes reserve
 enforcement, per-frame hardfork selection, inspectors, protocol replay, system
 calls, and optional features.
 
-Applications that own a native evm2 host can use `create_host()` and the
-`MonadExecution` lifecycle and inspector hooks. The standalone wrapper uses the
-same execution implementation.
+Applications that own a native evm2 host use the stateless `MonadEvmFactory` and
+compose their inspector with `reserve_balance::reserve_inspector()`. The
+`MonadEvmBuilder` supplies the standalone wrapper with per-frame fork selection
+and synthetic-call context handling. Both paths share Monad's protocol handlers;
+memory caps also apply with default features disabled.
 
 ## Fixture replay
 
@@ -65,7 +67,7 @@ python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 cargo doc --locked --workspace --no-deps --all-features
 ```
 
-The fixture runner requires `std` and memory limits. Target the runtime package
+The fixture runner requires `std`. Target the runtime package
 explicitly when checking feature configurations or `no_std` builds:
 
 ```sh

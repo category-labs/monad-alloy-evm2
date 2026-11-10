@@ -11,7 +11,7 @@ pub const MONAD_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 
 /// MIP-3 memory limit in bytes (8 MiB), pooled across the call stack.
 ///
-/// Selected for MonadNine and later when the `memory_limit` feature is enabled.
+/// Enforced for MonadNine and later in every build.
 pub const MONAD_MEMORY_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// Maximum deployed contract code size in bytes (128 KiB).
@@ -49,13 +49,10 @@ pub const fn monad_gas_params(spec: MonadHardfork) -> GasParams {
 
 /// Returns the effective memory limit for a hardfork and requested limit.
 ///
-/// With `memory_limit`, MonadNine and later clamp the requested limit to 8 MiB,
-/// preserving stricter limits. MonadEight uses the requested limit unchanged.
-/// Without the feature, memory is uncapped (`u64::MAX`) for every hardfork.
+/// MonadNine and later clamp the requested limit to 8 MiB, preserving stricter
+/// limits. MonadEight uses the requested limit unchanged.
 pub const fn monad_memory_limit(spec: MonadHardfork, configured: u64) -> u64 {
-    if !cfg!(feature = "memory_limit") {
-        u64::MAX
-    } else if MonadHardfork::MonadNine.is_enabled_in(spec) && configured > MONAD_MEMORY_LIMIT {
+    if MonadHardfork::MonadNine.is_enabled_in(spec) && configured > MONAD_MEMORY_LIMIT {
         MONAD_MEMORY_LIMIT
     } else {
         configured
@@ -79,8 +76,7 @@ pub struct MonadLimits {
     pub max_initcode_size: Option<usize>,
     /// Memory limit override in bytes, before applying the MIP-3 cap.
     ///
-    /// `None` selects the engine default (2^32 - 1 bytes). This field is ignored
-    /// when the `memory_limit` feature is disabled.
+    /// `None` selects the engine default (2^32 - 1 bytes).
     pub memory_limit: Option<u64>,
 }
 
