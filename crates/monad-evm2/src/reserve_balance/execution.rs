@@ -4,6 +4,7 @@ use super::sync_reserve_balance;
 use crate::{MonadEvmTypes, MonadHaltReason, MonadHost};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log, U256};
+use core::cell::Cell;
 use evm2::{
     DatabaseError, PrecompileError,
     evm::{PrewarmSet, StateCheckpoint},
@@ -40,11 +41,20 @@ pub(crate) struct ReserveInspector<'a> {
     frames: usize,
     root_override: bool,
     enforce_root: bool,
+    user_steps: Cell<OpcodeSet>,
+    pending_steps: Vec<bool>,
 }
 
 impl<'a> ReserveInspector<'a> {
     pub(crate) const fn new(inner: Option<&'a mut dyn Inspector<MonadEvmTypes>>) -> Self {
-        Self { inner, frames: 0, root_override: false, enforce_root: false }
+        Self {
+            inner,
+            frames: 0,
+            root_override: false,
+            enforce_root: false,
+            user_steps: Cell::new(OpcodeSet::EMPTY),
+            pending_steps: Vec::new(),
+        }
     }
 
     fn capture_stop(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
@@ -146,14 +156,17 @@ impl<'a> ReserveInspector<'a> {
 
 impl Inspector<MonadEvmTypes> for ReserveInspector<'_> {
     fn inspector_config(&self) -> InspectorConfig {
+        let config = self.inner.as_ref().map_or_else(
+            || InspectorConfig::new().with_steps(OpcodeSet::EMPTY),
+            |inner| inner.inspector_config(),
+        );
+        // Refresh at the same boundaries where the engine reads its configuration.
+        self.user_steps.set(config.steps);
         if self.enforce_root && self.frames == 1 {
             // Any root instruction can halt, including static-gas and stack failures.
             InspectorConfig::new()
         } else {
-            self.inner.as_ref().map_or_else(
-                || InspectorConfig::new().with_steps(OpcodeSet::EMPTY),
-                |inner| inner.inspector_config(),
-            )
+            config
         }
     }
 
@@ -166,13 +179,20 @@ impl Inspector<MonadEvmTypes> for ReserveInspector<'_> {
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
         if let Some(inner) = &mut self.inner {
-            inner.step(interp);
+            let selected = self.user_steps.get().contains(interp.opcode());
+            // Child callbacks can change the filter before this instruction ends.
+            self.pending_steps.push(selected);
+            if selected {
+                inner.step(interp);
+            }
         }
         self.capture_stop(interp);
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
-        if let Some(inner) = &mut self.inner {
+        if let Some(inner) = &mut self.inner
+            && self.pending_steps.pop().unwrap_or(false)
+        {
             inner.step_end(interp);
         }
         self.capture_stop(interp);
