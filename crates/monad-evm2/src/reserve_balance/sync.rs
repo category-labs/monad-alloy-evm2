@@ -5,11 +5,11 @@ use crate::MonadHost;
 use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, U256,
-    map::{HashMap, HashSet},
+    map::{AddressMap, HashMap, HashSet},
 };
 use evm2::{
     DatabaseError,
-    evm::{AccountFlags, DynDatabase, JournalEntry},
+    evm::{AccountFlags, AccountInfo, DynDatabase, JournalEntry},
 };
 
 /// Transaction journal position after fee charging and authorization processing.
@@ -98,8 +98,35 @@ pub(crate) fn end_reserve_balance_tx(evm: &mut MonadHost<'_>) {
 /// The replacement state's accepted balances become the new baseline; do not rebase
 /// between synthetic calls that belong to the same unchanged state.
 pub fn rebase_reserve_balance(evm: &mut MonadHost<'_>) -> Result<(), DatabaseError> {
+    rebase_reserve_balance_with_originals(evm, &AddressMap::default())
+}
+
+/// Rebases replacement state while retaining supplied transaction-start account fields.
+///
+/// Fork switches can accept persistent accounts' in-flight changes into the new
+/// overlay. Their accepted balances then differ from the enclosing transaction's
+/// original balances. Supply those original accounts here; `None` means the
+/// account did not exist at transaction entry. Unlisted accounts use the replacement
+/// database. Originals are retained even for accounts first debited after rebasing.
+///
+/// Synchronize before changing state. The replacement journal's existing writes
+/// become the new cursor and are not treated as execution debits. Database errors
+/// leave the previous Monad bookkeeping intact.
+pub fn rebase_reserve_balance_with_originals(
+    evm: &mut MonadHost<'_>,
+    originals: &AddressMap<Option<AccountInfo>>,
+) -> Result<(), DatabaseError> {
     let saved = evm.ext().clone();
     evm.ext_mut().reserve_balance_sync = Default::default();
+    evm.ext_mut().reserve_balance_sync.originals.extend(originals.iter().map(|(address, info)| {
+        (
+            *address,
+            (
+                info.as_ref().map_or(U256::ZERO, |info| info.balance),
+                info.as_ref().map_or(KECCAK256_EMPTY, |info| info.code_hash),
+            ),
+        )
+    }));
     let tracked: Vec<_> = saved.reserve_balance.tracked_addresses().copied().collect();
     let mut views = HashMap::<Address, ReserveAccount>::default();
     for address in tracked {

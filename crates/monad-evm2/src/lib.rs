@@ -24,7 +24,10 @@ pub use evm::{
 };
 
 mod executor;
-pub use executor::{MonadEvm, MonadExecutedTx};
+pub use executor::MonadEvm;
+
+pub mod execution;
+pub use execution::{MonadExecutedTx, MonadExecution};
 
 mod factory;
 pub use factory::MonadEvmFactory;
@@ -56,7 +59,7 @@ pub use spec::{
 };
 
 mod transaction;
-pub use transaction::{SYSTEM_ADDRESS, SystemSenderIsAuthority};
+pub use transaction::{SYSTEM_ADDRESS, SystemSenderIsAuthority, monad_tx_registry};
 
 pub mod system;
 pub use system::{

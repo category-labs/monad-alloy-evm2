@@ -34,6 +34,10 @@ The [runtime documentation](crates/monad-evm2/README.md) describes reserve
 enforcement, per-frame hardfork selection, inspectors, protocol replay, system
 calls, and optional features.
 
+Applications that own a native evm2 host can use `create_host()` and the
+`MonadExecution` lifecycle and inspector hooks. The standalone wrapper uses the
+same execution implementation.
+
 ## Fixture replay
 
 ```sh

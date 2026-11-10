@@ -1,11 +1,9 @@
 //! Construction of Monad EVM instances.
 
 use crate::{
-    MonadBlockEnv, MonadEvm, MonadEvmExt, MonadHardfork, MonadHost, MonadLimits,
-    frame::FramePrecompiles, reserve_balance::ReservePrecompiles, transaction::tx_registry,
+    MonadBlockEnv, MonadEvm, MonadEvmExt, MonadExecution, MonadHardfork, MonadHost, MonadLimits,
+    monad_tx_registry,
 };
-use alloc::sync::Arc;
-use core::sync::atomic::AtomicU8;
 use evm2::{ExecutionConfig, evm::DynDatabase};
 
 /// Builds EVMs for one chain using the supplied hardfork, block, and database.
@@ -53,6 +51,21 @@ impl MonadEvmFactory {
         block: MonadBlockEnv,
         db: impl DynDatabase + 'a,
     ) -> MonadEvm<'a> {
+        let (host, execution) = self.create_host(spec, block, db);
+        MonadEvm::new(host, execution)
+    }
+
+    /// Creates a native evm2 host and its execution hooks for an embedding application.
+    ///
+    /// Keep the pair together. Execute through [`MonadExecution::transact`] with
+    /// the application's inspector, or use its documented low-level inspector hook.
+    /// Each nested host needs a fresh pair, even when inheriting extension state.
+    pub fn create_host<'a>(
+        &self,
+        spec: MonadHardfork,
+        block: MonadBlockEnv,
+        db: impl DynDatabase + 'a,
+    ) -> (MonadHost<'a>, MonadExecution) {
         let config =
             ExecutionConfig::for_spec_and_version(spec, self.limits.version(spec, self.chain_id));
         let mut ext = MonadEvmExt::default();
@@ -61,17 +74,16 @@ impl MonadEvmFactory {
                 .memory_limit
                 .unwrap_or(evm2::Version::new(spec.into_eth_spec()).memory_limit),
         );
-        let selection = Arc::new(AtomicU8::new(spec as u8));
-        let precompiles = FramePrecompiles::new(selection.clone());
+        let execution = MonadExecution::new(spec);
         let host = MonadHost::new_with_execution_config_and_ext(
             config,
             spec,
             block,
-            tx_registry(),
+            monad_tx_registry(),
             db,
-            ReservePrecompiles(precompiles),
+            execution.precompiles(),
             ext,
         );
-        MonadEvm::new(host, selection)
+        (host, execution)
     }
 }

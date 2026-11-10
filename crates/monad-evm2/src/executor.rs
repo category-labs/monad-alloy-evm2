@@ -1,27 +1,21 @@
 //! Transaction and inspector lifecycle around the native evm2 host.
 
-use crate::frame::{FrameInspector, FramePrecompiles};
-use crate::reserve_balance::{ReserveInspector, ReservePrecompiles, end_reserve_balance_tx};
 use crate::{
-    MonadBlockEnv, MonadEvmExt, MonadEvmTypes, MonadHardfork, MonadHost, MonadTxEnvelope,
-    SYSTEM_ADDRESS,
+    MonadBlockEnv, MonadEvmTypes, MonadExecutedTx, MonadExecution, MonadHardfork, MonadHost,
+    MonadTxEnvelope,
 };
-use alloc::{boxed::Box, sync::Arc};
-use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloc::boxed::Box;
+use alloy_consensus::transaction::Recovered;
 use core::{
     fmt,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use evm2::{
     ExecutionConfig, TxResult,
-    evm::{
-        AccountChanges, BlockStateAccumulator, ExecutedTx, StateChangeSink, StateChangeSource,
-        SystemTx, TxResultWithState, TxStateChanges,
-    },
-    inspector::{Inspector, NoopInspector},
+    evm::SystemTx,
+    inspector::Inspector,
     precompile::PrecompileProvider,
-    registry::{HandlerError, HandlerResult, TxRegistry},
+    registry::{HandlerResult, TxRegistry},
 };
 
 /// Monad transaction executor with automatic reserve enforcement.
@@ -32,8 +26,7 @@ use evm2::{
 pub struct MonadEvm<'a> {
     host: MonadHost<'a>,
     inspector: Option<Box<dyn Inspector<MonadEvmTypes> + 'a>>,
-    // Kept outside cloneable snapshots so contexts cannot rebind another EVM's provider.
-    frame_selection: Arc<AtomicU8>,
+    execution: MonadExecution,
 }
 
 impl fmt::Debug for MonadEvm<'_> {
@@ -56,8 +49,8 @@ impl DerefMut for MonadEvm<'_> {
 }
 
 impl<'a> MonadEvm<'a> {
-    pub(crate) const fn new(host: MonadHost<'a>, frame_selection: Arc<AtomicU8>) -> Self {
-        Self { host, inspector: None, frame_selection }
+    pub(crate) const fn new(host: MonadHost<'a>, execution: MonadExecution) -> Self {
+        Self { host, inspector: None, execution }
     }
 
     /// Executes a transaction with automatic reserves, composing the installed inspector.
@@ -67,7 +60,7 @@ impl<'a> MonadEvm<'a> {
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
         let inspector =
             self.inspector.as_mut().map(|inner| &mut **inner as &mut dyn Inspector<MonadEvmTypes>);
-        transact(&mut self.host, tx, inspector, self.frame_selection.clone())
+        self.execution.transact(&mut self.host, tx, inspector)
     }
 
     /// Executes with a borrowed inspector, retaining Monad's internal reserve observer.
@@ -76,7 +69,7 @@ impl<'a> MonadEvm<'a> {
         tx: &Recovered<MonadTxEnvelope>,
         inspector: &mut dyn Inspector<MonadEvmTypes>,
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
-        transact(&mut self.host, tx, Some(inspector), self.frame_selection.clone())
+        self.execution.transact(&mut self.host, tx, Some(inspector))
     }
 
     /// Executes and commits each transaction with Monad lifecycle handling.
@@ -102,15 +95,7 @@ impl<'a> MonadEvm<'a> {
 
     /// Validates admission without retaining state or changing a preserved tracker.
     pub fn validate_tx(&mut self, tx: &Recovered<MonadTxEnvelope>) -> HandlerResult<()> {
-        if self.host.ext().preserve_reserve_balance_tracker
-            || (self.host.ext().protocol_replay && tx.signer() == SYSTEM_ADDRESS)
-        {
-            let scope = PreservedScope::new(&mut self.host);
-            scope.host.validate_tx(tx)
-        } else {
-            end_reserve_balance_tx(&mut self.host);
-            self.host.validate_tx(tx)
-        }
+        self.execution.validate_tx(&mut self.host, tx)
     }
 
     /// Executes a protocol system call with native system gas and nonce rules.
@@ -122,7 +107,7 @@ impl<'a> MonadEvm<'a> {
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
         let inspector =
             self.inspector.as_mut().map(|inner| &mut **inner as &mut dyn Inspector<MonadEvmTypes>);
-        system_call(&mut self.host, tx, inspector, self.frame_selection.clone())
+        self.execution.system_call(&mut self.host, tx, inspector)
     }
 
     /// Executes a protocol system call with an inspector borrowed for this call.
@@ -135,7 +120,7 @@ impl<'a> MonadEvm<'a> {
         tx: SystemTx,
         inspector: &mut dyn Inspector<MonadEvmTypes>,
     ) -> HandlerResult<MonadExecutedTx<'_, 'a>> {
-        system_call(&mut self.host, tx, Some(inspector), self.frame_selection.clone())
+        self.execution.system_call(&mut self.host, tx, Some(inspector))
     }
 
     /// Changes execution configuration while retaining root precompile observation.
@@ -150,11 +135,7 @@ impl<'a> MonadEvm<'a> {
         registry: TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>>,
         precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a,
     ) {
-        let memory_limit = config.version().memory_limit;
-        self.host.set_execution_config(config, spec, registry, ReservePrecompiles(precompiles));
-        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
-        self.host.ext_mut().frame.reset();
-        self.frame_selection.store(spec as u8, Ordering::Relaxed);
+        self.execution.set_execution_config(&mut self.host, config, spec, registry, precompiles);
     }
 
     /// Changes block and execution configuration while retaining reserve observation.
@@ -168,17 +149,14 @@ impl<'a> MonadEvm<'a> {
         registry: TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>>,
         precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a,
     ) {
-        let memory_limit = config.version().memory_limit;
-        self.host.set_block_and_execution_config(
+        self.execution.set_block_and_execution_config(
+            &mut self.host,
             block,
             config,
             spec,
             registry,
-            ReservePrecompiles(precompiles),
+            precompiles,
         );
-        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
-        self.host.ext_mut().frame.reset();
-        self.frame_selection.store(spec as u8, Ordering::Relaxed);
     }
 
     /// Changes block and runtime settings within the configured fork.
@@ -189,10 +167,7 @@ impl<'a> MonadEvm<'a> {
         block: MonadBlockEnv,
         config: ExecutionConfig<MonadEvmTypes>,
     ) {
-        let memory_limit = config.version().memory_limit;
-        self.host.set_block_and_execution_config_within_spec(block, config);
-        self.host.ext_mut().frame.memory_limit = Some(memory_limit);
-        self.host.ext_mut().frame.reset();
+        self.execution.set_block_and_execution_config_within_spec(&mut self.host, block, config);
     }
 
     /// Installs a user inspector alongside automatic reserve enforcement.
@@ -225,7 +200,7 @@ impl<'a> MonadEvm<'a> {
     /// The supplied provider is used for every frame. Custom providers are
     /// responsible for their own hardfork selection.
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<MonadEvmTypes> + 'a) {
-        self.host.set_precompiles(ReservePrecompiles(precompiles));
+        self.execution.set_precompiles(&mut self.host, precompiles);
     }
 
     /// Replaces boxed precompiles while preserving reserve observation.
@@ -238,294 +213,6 @@ impl<'a> MonadEvm<'a> {
 
     /// Installs Monad's default precompiles with automatic per-frame hardfork selection.
     pub fn reset_precompiles(&mut self) {
-        let precompiles = FramePrecompiles::new(self.frame_selection.clone());
-        self.set_precompiles(precompiles);
-        let spec = self.host.config_spec_id();
-        self.host.ext_mut().frame.reset();
-        self.frame_selection.store(spec as u8, Ordering::Relaxed);
-    }
-}
-
-fn system_call<'e, 'a>(
-    host: &'e mut MonadHost<'a>,
-    tx: SystemTx,
-    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
-    selection: Arc<AtomicU8>,
-) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
-    // The pinned engine scopes borrowed inspectors through its transaction
-    // dispatcher. This envelope only selects the handler; the private request
-    // carries the system call and bypasses ordinary transaction preparation.
-    let envelope = Recovered::new_unchecked(
-        MonadTxEnvelope::Legacy(TxLegacy {
-            to: tx.system_contract_address.into(),
-            input: tx.data.clone(),
-            gas_limit: tx.gas_limit,
-            ..Default::default()
-        }),
-        tx.caller,
-    );
-    let dispatched = Arc::new(AtomicBool::new(false));
-    let executed = {
-        let scope = PreservedScope::isolated(host);
-        scope.host.ext_mut().system_call =
-            Some(crate::system::SystemCall::new(tx, dispatched.clone()));
-        let mut noop = NoopInspector::default();
-        let mut observer = FrameInspector::new(
-            inspector.unwrap_or(&mut noop),
-            selection,
-            scope.host.config_spec_id(),
-        );
-        let pending = scope.host.transact_with_inspector(&envelope, &mut observer)?;
-        if !dispatched.load(Ordering::Relaxed) {
-            // A replacement registry must not silently treat this as an ordinary tx.
-            return Err(HandlerError::external(MissingSystemCallHandler));
-        }
-        pending.detach()
-    };
-    Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
-        host,
-        executed: Some(executed),
-        before: None,
-    }))))
-}
-
-#[derive(Debug)]
-struct MissingSystemCallHandler;
-
-impl fmt::Display for MissingSystemCallHandler {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("system calls require the Monad transaction handler")
-    }
-}
-
-impl core::error::Error for MissingSystemCallHandler {}
-
-fn transact<'e, 'a>(
-    host: &'e mut MonadHost<'a>,
-    tx: &Recovered<MonadTxEnvelope>,
-    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
-    selection: Arc<AtomicU8>,
-) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
-    if host.ext().protocol_replay && tx.signer() == SYSTEM_ADDRESS {
-        return replay_protocol(host, tx, inspector, selection);
-    }
-    let mut observer =
-        FrameInspector::new(ReserveInspector::new(inspector), selection, host.config_spec_id());
-    if host.ext().preserve_reserve_balance_tracker {
-        let mut scope = PreservedScope::new(host);
-        let executed = scope.host.transact_with_inspector(tx, &mut observer)?.detach();
-        let before = scope.before.take().expect("preserved context");
-        scope.host.ext_mut().memory_pool_offset = before.memory_pool_offset;
-        scope.host.ext_mut().reserve_execution = before.reserve_execution.clone();
-        drop(scope);
-        Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
-            host,
-            executed: Some(executed),
-            before: Some(before),
-        }))))
-    } else {
-        // Also clears stale state when registry dispatch rejects an unsupported envelope.
-        end_reserve_balance_tx(host);
-        host.transact_with_inspector(tx, &mut observer)
-            .map(|tx| MonadExecutedTx(Pending::Ordinary(tx)))
-    }
-}
-
-fn replay_protocol<'e, 'a>(
-    host: &'e mut MonadHost<'a>,
-    tx: &Recovered<MonadTxEnvelope>,
-    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
-    selection: Arc<AtomicU8>,
-) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
-    let dispatched = Arc::new(AtomicBool::new(false));
-    let executed = {
-        let scope = PreservedScope::isolated(host);
-        scope.host.ext_mut().protocol_replay = true;
-        scope.host.ext_mut().protocol_dispatch = Some(dispatched.clone());
-        let mut noop = NoopInspector::default();
-        let mut observer = FrameInspector::new(
-            inspector.unwrap_or(&mut noop),
-            selection,
-            scope.host.config_spec_id(),
-        );
-        let pending = scope.host.transact_with_inspector(tx, &mut observer)?;
-        if !dispatched.load(Ordering::Relaxed) {
-            return Err(HandlerError::external(MissingSystemCallHandler));
-        }
-        pending.detach()
-    };
-    Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
-        host,
-        executed: Some(executed),
-        before: None,
-    }))))
-}
-
-struct PreservedScope<'e, 'a> {
-    host: &'e mut MonadHost<'a>,
-    before: Option<MonadEvmExt>,
-}
-
-impl<'e, 'a> PreservedScope<'e, 'a> {
-    fn new(host: &'e mut MonadHost<'a>) -> Self {
-        Self { before: Some(host.ext().clone()), host }
-    }
-
-    fn isolated(host: &'e mut MonadHost<'a>) -> Self {
-        let scope = Self::new(host);
-        let chain = scope.host.ext().chain.clone();
-        let mut frame = scope.host.ext().frame.clone();
-        frame.reset();
-        *scope.host.ext_mut() = MonadEvmExt { chain, frame, ..Default::default() };
-        scope
-    }
-}
-
-impl Drop for PreservedScope<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(before) = self.before.take() {
-            *self.host.ext_mut() = before;
-        }
-    }
-}
-
-enum Pending<'e, 'a> {
-    Ordinary(ExecutedTx<'e, 'a, MonadEvmTypes>),
-    Detached(Box<DetachedPending<'e, 'a>>),
-}
-
-struct DetachedPending<'e, 'a> {
-    host: &'e mut MonadHost<'a>,
-    executed: Option<TxResultWithState<MonadEvmTypes>>,
-    before: Option<MonadEvmExt>,
-}
-
-impl Drop for DetachedPending<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(before) = self.before.take() {
-            *self.host.ext_mut() = before;
-        }
-    }
-}
-
-/// Transaction state awaiting commit, discard or detach.
-///
-/// Ordinary transactions retain evm2's borrowed change view. Preserved synthetic
-/// calls detach their state so discarding can also restore the enclosing context.
-/// System calls detach state after restoring their isolated Monad bookkeeping.
-#[must_use = "transaction state must be committed, discarded or detached"]
-pub struct MonadExecutedTx<'e, 'a>(Pending<'e, 'a>);
-
-impl fmt::Debug for MonadExecutedTx<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MonadExecutedTx").field("result", self.result()).finish_non_exhaustive()
-    }
-}
-
-impl MonadExecutedTx<'_, '_> {
-    /// Returns the result before resolving transaction state.
-    pub fn result(&self) -> &TxResult<MonadEvmTypes> {
-        match &self.0 {
-            Pending::Ordinary(tx) => tx.result(),
-            Pending::Detached(pending) => {
-                &pending.executed.as_ref().expect("pending execution").result
-            }
-        }
-    }
-
-    /// Returns a borrowed view of account and storage changes.
-    pub fn changes(&self) -> TxStateChanges<'_> {
-        match &self.0 {
-            Pending::Ordinary(tx) => tx.changes(),
-            Pending::Detached(pending) => {
-                pending.executed.as_ref().expect("pending execution").pending_state.changes()
-            }
-        }
-    }
-
-    /// Returns each account loaded by the transaction with its changes.
-    pub fn account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
-        self.changes().account_changes()
-    }
-
-    /// Accepts execution state and, for synthetic calls, its updated reserve context.
-    pub fn commit(self) -> TxResult<MonadEvmTypes> {
-        match self.0 {
-            Pending::Ordinary(tx) => tx.commit(),
-            Pending::Detached(mut pending) => {
-                let executed = pending.executed.take().expect("pending execution");
-                pending.host.commit_source(&executed.pending_state);
-                pending.before = None;
-                executed.result
-            }
-        }
-    }
-
-    /// Accepts execution state and records changes in a block accumulator.
-    pub fn commit_to(self, block: &mut BlockStateAccumulator) -> TxResult<MonadEvmTypes> {
-        let Ok(result) = self.commit_with(block);
-        result
-    }
-
-    /// Streams changes to a sink before accepting execution state.
-    pub fn commit_with<S: StateChangeSink>(
-        self,
-        sink: &mut S,
-    ) -> Result<TxResult<MonadEvmTypes>, S::Error> {
-        self.changes().visit(sink)?;
-        Ok(self.commit())
-    }
-
-    /// Discards state and restores the enclosing reserve context for synthetic calls.
-    pub fn discard(self) -> TxResult<MonadEvmTypes> {
-        match self.0 {
-            Pending::Ordinary(tx) => tx.discard(),
-            Pending::Detached(mut pending) => {
-                pending.executed.take().expect("pending execution").result
-            }
-        }
-    }
-
-    /// Streams changes to a sink and then discards execution.
-    pub fn discard_with<S: StateChangeSink>(
-        self,
-        sink: &mut S,
-    ) -> Result<TxResult<MonadEvmTypes>, S::Error> {
-        self.changes().visit(sink)?;
-        Ok(self.discard())
-    }
-
-    /// Returns the post-execution context of a preserved synthetic call.
-    ///
-    /// Clone this before detaching if the detached state will be accepted later.
-    pub const fn preserved_context(&self) -> Option<&MonadEvmExt> {
-        match &self.0 {
-            Pending::Ordinary(_) => None,
-            Pending::Detached(pending) => {
-                if pending.before.is_some() {
-                    Some(pending.host.ext())
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// Detaches state and restores the enclosing reserve context.
-    ///
-    /// To accept synthetic changes later, first clone [`Self::preserved_context`],
-    /// then commit the detached state and install that context together. A detached
-    /// state diff alone cannot reconstruct the enclosing transaction's baselines.
-    pub fn detach(self) -> TxResultWithState<MonadEvmTypes> {
-        match self.0 {
-            Pending::Ordinary(tx) => tx.detach(),
-            Pending::Detached(mut pending) => pending.executed.take().expect("pending execution"),
-        }
-    }
-}
-
-impl StateChangeSource for MonadExecutedTx<'_, '_> {
-    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        self.changes().visit(sink)
+        self.execution.reset_precompiles(&mut self.host);
     }
 }

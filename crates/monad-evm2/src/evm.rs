@@ -11,7 +11,7 @@ use evm2::{
 
 /// The native host used by Monad instructions, precompiles and inspectors.
 ///
-/// Use [`crate::MonadEvm`] to execute transactions with Monad lifecycle handling.
+/// Use [`crate::MonadExecution`] or [`crate::MonadEvm`] for Monad lifecycle handling.
 pub type MonadHost<'a> = Evm<'a, MonadEvmTypes>;
 
 /// Block inputs visible to a Monad EVM.
@@ -105,6 +105,27 @@ impl MonadEvmExt {
     /// Memory in bytes held by suspended ancestor frames.
     pub const fn memory_pool_offset(&self) -> u64 {
         self.memory_pool_offset
+    }
+
+    /// Restores context while retaining bookkeeping owned by currently executing frames.
+    ///
+    /// Use when an embedder restores a snapshot or accepts a preserved synthetic
+    /// call into a running host. Chain context, reserves and their journal cursor
+    /// come from `context`; suspended memory, frame selection, reserve adjudication
+    /// and system dispatch remain attached to the running execution.
+    ///
+    /// Restore matching native state first. After merging changes from a different
+    /// journal, call [`crate::reserve_balance::rebase_reserve_balance`] (or its
+    /// transaction-originals variant). A context alone does not restore state or
+    /// the host's block and execution configuration.
+    pub fn replace_while_executing(&mut self, mut context: Self) {
+        core::mem::swap(&mut context.memory_pool_offset, &mut self.memory_pool_offset);
+        core::mem::swap(&mut context.frame, &mut self.frame);
+        core::mem::swap(&mut context.reserve_execution, &mut self.reserve_execution);
+        core::mem::swap(&mut context.system_call, &mut self.system_call);
+        core::mem::swap(&mut context.protocol_dispatch, &mut self.protocol_dispatch);
+        context.preserve_reserve_balance_tracker = self.preserve_reserve_balance_tracker;
+        *self = context;
     }
 }
 

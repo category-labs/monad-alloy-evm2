@@ -511,7 +511,7 @@ fn replay_mode_retains_ordinary_reserve_enforcement() {
 }
 
 #[test]
-fn replay_requires_the_wrapper_and_monad_transaction_handler() {
+fn replay_requires_lifecycle_hooks_and_monad_transaction_handler() {
     let mut evm = evm(MonadHardfork::MonadTen);
     let tx = recovered(reward(0));
     assert!(MonadHost::transact(&mut evm, &tx).is_err());

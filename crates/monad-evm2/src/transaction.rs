@@ -45,7 +45,12 @@ impl fmt::Display for SystemSenderIsAuthority {
 
 impl core::error::Error for SystemSenderIsAuthority {}
 
-pub(crate) fn tx_registry() -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
+/// Returns Monad's transaction handlers for a native evm2 host.
+///
+/// Rules follow the host's configured hardfork. Pair this registry with
+/// [`crate::MonadExecution`]'s inspector and precompile hooks; ordinary execution
+/// rejects calls that omit the mandatory reserve observer.
+pub fn monad_tx_registry() -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
     let mut registry = TxRegistry::new();
     for ty in [TxType::Legacy, TxType::Eip2930, TxType::Eip1559, TxType::Eip4844, TxType::Eip7702] {
         let id = ty as u8;
@@ -69,7 +74,7 @@ enum PreparedRequest {
 
 fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     let host = &mut *req.host;
-    // Only the wrapper can install this private request. System execution bypasses
+    // Only the execution hooks can install this private request. System execution bypasses
     // ordinary admission, nonce updates, fees, authorizations and reserve checks.
     if let Some(system) = host.ext_mut().system_call.take() {
         return Ok(PreparedRequest::System(system));
@@ -208,15 +213,15 @@ impl fmt::Display for MissingReserveContext {
 impl core::error::Error for MissingReserveContext {}
 
 #[derive(Debug)]
-pub(crate) struct MissingMonadExecutor;
+struct MissingMonadInspector;
 
-impl fmt::Display for MissingMonadExecutor {
+impl fmt::Display for MissingMonadInspector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Monad transactions must execute through MonadEvm")
+        f.write_str("Monad transactions require the Monad execution inspector")
     }
 }
 
-impl core::error::Error for MissingMonadExecutor {}
+impl core::error::Error for MissingMonadInspector {}
 
 impl Drop for ReserveScope<'_, '_> {
     fn drop(&mut self) {
@@ -263,9 +268,9 @@ fn execute_inner(
     }
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
     if !host.ext().reserve_execution.observed {
-        // Direct native-host entrypoints cannot compose the mandatory observer. Abort so
-        // bypassing the wrapper never accepts execution without reserve adjudication.
-        return Err(HandlerError::external(MissingMonadExecutor));
+        // Native callers must compose the same mandatory observer as the wrapper.
+        // Reject execution that omitted reserve adjudication.
+        return Err(HandlerError::external(MissingMonadInspector));
     }
     sync_reserve_balance(host)?;
     let reverted_for_reserve_balance = host.ext().reserve_execution.rejected;

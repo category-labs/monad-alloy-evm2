@@ -95,12 +95,12 @@ impl ProtocolSystemCall {
         self,
         host: &mut MonadHost<'_>,
     ) -> HandlerResult<TxResult<MonadEvmTypes>> {
-        // Require the wrapper's isolated context and scoped inspector lifecycle.
+        // Require the execution hooks' isolated context and scoped inspector lifecycle.
         let dispatched = host
             .ext()
             .protocol_dispatch
             .as_ref()
-            .ok_or_else(|| HandlerError::external(crate::transaction::MissingMonadExecutor))?;
+            .ok_or_else(|| HandlerError::external(crate::execution::MissingMonadLifecycle))?;
         dispatched.store(true, Ordering::Relaxed);
         let mut result = host.execute_system_call(self.system_tx())?;
         if !result.is_success() {

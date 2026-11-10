@@ -9,7 +9,8 @@ pub use precompile::{
 mod sync;
 pub(crate) use sync::{ReserveBalanceSync, begin_reserve_balance_tx, end_reserve_balance_tx};
 pub use sync::{
-    dipped_into_reserve, rebase_reserve_balance, reserve_account, sync_reserve_balance,
+    dipped_into_reserve, rebase_reserve_balance, rebase_reserve_balance_with_originals,
+    reserve_account, sync_reserve_balance,
 };
 
 mod execution;

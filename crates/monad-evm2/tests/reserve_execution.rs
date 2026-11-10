@@ -656,10 +656,10 @@ fn rebase_drops_accounts_missing_from_the_replacement_fork() {
 }
 
 #[test]
-fn batch_transactions_enforce_reserves_and_native_entrypoints_cannot_bypass_the_wrapper() {
+fn batch_transactions_enforce_reserves_and_native_entrypoints_require_the_observer() {
     let mut evm = evm(MonadHardfork::MonadTen, true);
     let error = monad_evm2::MonadHost::transact(&mut evm, &tx(TARGET, 1, 0)).unwrap_err();
-    assert!(error.to_string().contains("through MonadEvm"));
+    assert!(error.to_string().contains("Monad execution inspector"));
     assert_eq!(balance(&mut evm, SENDER), U256::from(INITIAL));
     let transactions = [tx(TARGET, 1, 0), tx(TARGET, 0, 1)];
     let results = evm.transact_iter(&transactions).collect::<Result<Vec<_>, _>>().unwrap();

@@ -17,6 +17,29 @@ native evm2 host. The current adapter observes root instructions to detect reser
 violations before native rollback, so transactions use evm2's inspected interpreter.
 Callers supply block history through `evm.ext_mut().chain`.
 
+Embedders that own a native evm2 `Evm<MonadEvmTypes>` can use
+`MonadEvmFactory::create_host()` to obtain `(host, execution)`. `MonadExecution`
+provides the shared transaction, validation, system-call, configuration and
+inspector hooks; the standalone `MonadEvm` delegates to the same implementation.
+Pass the embedder's inspector explicitly to
+`execution.transact(&mut host, &tx, Some(&mut inspector))`, then commit, discard or
+detach the returned `MonadExecutedTx`. An inspector installed directly on the
+host is retained but is not selected by these execution methods.
+
+Custom factories can combine `monad_tx_registry()` with
+`MonadExecution::precompiles()`. Keep one hook instance per host, outside cloneable
+context snapshots. Each nested EVM needs its own hooks and provider. The public
+`inspector()` adapter supports ordinary native transactions; preserved synthetic
+calls and protocol replay use the lifecycle methods. Direct execution without
+the mandatory observer is rejected.
+
+For external state changes, synchronize reserves before the change and rebase
+afterward. `rebase_reserve_balance_with_originals()` retains transaction-start
+fields for persistent accounts carried into another fork, including accounts
+first debited after the switch. `replace_while_executing()` restores matching
+extension state while retaining live frame, memory and enforcement bookkeeping.
+The `execution` module documents these contracts for consumer integration.
+
 Inspectors can select a call or creation's Monad hardfork in their `call` or
 `create` hook:
 
