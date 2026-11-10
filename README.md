@@ -31,8 +31,8 @@ let evm = factory.create_evm(
 ```
 
 The [runtime documentation](crates/monad-evm2/README.md) describes reserve
-enforcement, per-frame hardfork selection, inspectors, system calls, and optional
-features.
+enforcement, per-frame hardfork selection, inspectors, protocol replay, system
+calls, and optional features.
 
 ## Fixture replay
 

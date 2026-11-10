@@ -2,7 +2,10 @@
 
 use crate::frame::{FrameInspector, FramePrecompiles};
 use crate::reserve_balance::{ReserveInspector, ReservePrecompiles, end_reserve_balance_tx};
-use crate::{MonadBlockEnv, MonadEvmExt, MonadEvmTypes, MonadHardfork, MonadHost, MonadTxEnvelope};
+use crate::{
+    MonadBlockEnv, MonadEvmExt, MonadEvmTypes, MonadHardfork, MonadHost, MonadTxEnvelope,
+    SYSTEM_ADDRESS,
+};
 use alloc::{boxed::Box, sync::Arc};
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use core::{
@@ -99,7 +102,9 @@ impl<'a> MonadEvm<'a> {
 
     /// Validates admission without retaining state or changing a preserved tracker.
     pub fn validate_tx(&mut self, tx: &Recovered<MonadTxEnvelope>) -> HandlerResult<()> {
-        if self.host.ext().preserve_reserve_balance_tracker {
+        if self.host.ext().preserve_reserve_balance_tracker
+            || (self.host.ext().protocol_replay && tx.signer() == SYSTEM_ADDRESS)
+        {
             let scope = PreservedScope::new(&mut self.host);
             scope.host.validate_tx(tx)
         } else {
@@ -261,16 +266,9 @@ fn system_call<'e, 'a>(
     );
     let dispatched = Arc::new(AtomicBool::new(false));
     let executed = {
-        let scope = PreservedScope::new(host);
-        let chain = scope.host.ext().chain.clone();
-        let mut frame = scope.host.ext().frame.clone();
-        frame.reset();
-        *scope.host.ext_mut() = MonadEvmExt {
-            chain,
-            frame,
-            system_call: Some(crate::system::SystemCall::new(tx, dispatched.clone())),
-            ..Default::default()
-        };
+        let scope = PreservedScope::isolated(host);
+        scope.host.ext_mut().system_call =
+            Some(crate::system::SystemCall::new(tx, dispatched.clone()));
         let mut noop = NoopInspector::default();
         let mut observer = FrameInspector::new(
             inspector.unwrap_or(&mut noop),
@@ -308,6 +306,9 @@ fn transact<'e, 'a>(
     inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
     selection: Arc<AtomicU8>,
 ) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
+    if host.ext().protocol_replay && tx.signer() == SYSTEM_ADDRESS {
+        return replay_protocol(host, tx, inspector, selection);
+    }
     let mut observer =
         FrameInspector::new(ReserveInspector::new(inspector), selection, host.config_spec_id());
     if host.ext().preserve_reserve_balance_tracker {
@@ -330,6 +331,36 @@ fn transact<'e, 'a>(
     }
 }
 
+fn replay_protocol<'e, 'a>(
+    host: &'e mut MonadHost<'a>,
+    tx: &Recovered<MonadTxEnvelope>,
+    inspector: Option<&mut dyn Inspector<MonadEvmTypes>>,
+    selection: Arc<AtomicU8>,
+) -> HandlerResult<MonadExecutedTx<'e, 'a>> {
+    let dispatched = Arc::new(AtomicBool::new(false));
+    let executed = {
+        let scope = PreservedScope::isolated(host);
+        scope.host.ext_mut().protocol_replay = true;
+        scope.host.ext_mut().protocol_dispatch = Some(dispatched.clone());
+        let mut noop = NoopInspector::default();
+        let mut observer = FrameInspector::new(
+            inspector.unwrap_or(&mut noop),
+            selection,
+            scope.host.config_spec_id(),
+        );
+        let pending = scope.host.transact_with_inspector(tx, &mut observer)?;
+        if !dispatched.load(Ordering::Relaxed) {
+            return Err(HandlerError::external(MissingSystemCallHandler));
+        }
+        pending.detach()
+    };
+    Ok(MonadExecutedTx(Pending::Detached(Box::new(DetachedPending {
+        host,
+        executed: Some(executed),
+        before: None,
+    }))))
+}
+
 struct PreservedScope<'e, 'a> {
     host: &'e mut MonadHost<'a>,
     before: Option<MonadEvmExt>,
@@ -338,6 +369,15 @@ struct PreservedScope<'e, 'a> {
 impl<'e, 'a> PreservedScope<'e, 'a> {
     fn new(host: &'e mut MonadHost<'a>) -> Self {
         Self { before: Some(host.ext().clone()), host }
+    }
+
+    fn isolated(host: &'e mut MonadHost<'a>) -> Self {
+        let scope = Self::new(host);
+        let chain = scope.host.ext().chain.clone();
+        let mut frame = scope.host.ext().frame.clone();
+        frame.reset();
+        *scope.host.ext_mut() = MonadEvmExt { chain, frame, ..Default::default() };
+        scope
     }
 }
 

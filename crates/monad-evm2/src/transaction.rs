@@ -47,7 +47,7 @@ impl core::error::Error for SystemSenderIsAuthority {}
 
 pub(crate) fn tx_registry() -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
     let mut registry = TxRegistry::new();
-    for ty in [TxType::Legacy, TxType::Eip2930, TxType::Eip1559, TxType::Eip7702] {
+    for ty in [TxType::Legacy, TxType::Eip2930, TxType::Eip1559, TxType::Eip4844, TxType::Eip7702] {
         let id = ty as u8;
         registry.register(id, move |tx| (tx.ty() == id).then_some(tx), handler(prepare, execute));
     }
@@ -64,6 +64,7 @@ struct PreparedTx {
 enum PreparedRequest {
     Transaction(PreparedTx),
     System(crate::system::SystemCall),
+    Protocol(crate::ProtocolSystemCall),
 }
 
 fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
@@ -72,6 +73,15 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     // ordinary admission, nonce updates, fees, authorizations and reserve checks.
     if let Some(system) = host.ext_mut().system_call.take() {
         return Ok(PreparedRequest::System(system));
+    }
+    if host.ext().protocol_replay
+        && let Some(call) = crate::protocol::decode(req.tx.signer(), req.envelope)?
+    {
+        call.prepare(host)?;
+        return Ok(PreparedRequest::Protocol(call));
+    }
+    if req.envelope.ty() == TxType::Eip4844 as u8 {
+        return Err(HandlerError::UnsupportedTransactionType(TxType::Eip4844 as u8));
     }
     end_reserve_balance_tx(host);
     if host.ext().preserve_reserve_balance_tracker && !host.ext().reserve_balance.tracking_enabled()
@@ -174,6 +184,7 @@ fn execute(
 ) -> HandlerResult<TxResult<MonadEvmTypes>> {
     match prepared {
         PreparedRequest::System(system) => system.execute(req.host),
+        PreparedRequest::Protocol(call) => call.execute(req.host),
         PreparedRequest::Transaction(prepared) => {
             let scope = ReserveScope { host: req.host };
             execute_inner(scope.host, req.tx.signer(), req.envelope, prepared)
@@ -197,7 +208,7 @@ impl fmt::Display for MissingReserveContext {
 impl core::error::Error for MissingReserveContext {}
 
 #[derive(Debug)]
-struct MissingMonadExecutor;
+pub(crate) struct MissingMonadExecutor;
 
 impl fmt::Display for MissingMonadExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

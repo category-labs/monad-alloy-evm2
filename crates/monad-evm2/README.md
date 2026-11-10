@@ -38,6 +38,20 @@ installed inspector. System calls bypass ordinary transaction validation, fees,
 nonce updates and reserve enforcement, and preserve any enclosing synthetic
 call's reserve context. Their state handles support commit, discard and detach.
 
+For trusted historical block replay, set `evm.ext_mut().protocol_replay = true`
+before passing recovered envelopes to `transact()`. Canonical legacy envelopes
+from `SYSTEM_ADDRESS` execute reward, snapshot and epoch-change syscalls with
+zero receipt gas. Replay validates the chain ID and nonce, increments the system
+nonce, and mints reward value to staking. Failure rolls back the entire
+transaction. Installed and borrowed inspectors observe these calls, and any
+enclosing synthetic context is restored.
+
+`protocol_system_call()` classifies envelopes without changing state. The caller
+must authenticate the system sender and validate block ordering, epoch scheduling
+and reward amounts. Replay is disabled by default and must remain disabled for
+transaction-pool admission. Direct system-call helpers retain their separate
+nonce and prefunding semantics.
+
 Internal-call simulations may set `preserve_reserve_balance_tracker` after
 initializing or copying the enclosing transaction's reserve context. These
 synthetic calls retain its original balance baselines and defer enforcement to

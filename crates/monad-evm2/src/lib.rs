@@ -42,6 +42,9 @@ pub mod page;
 pub mod precompiles;
 pub use precompiles::monad_precompiles;
 
+pub mod protocol;
+pub use protocol::{ProtocolSystemCall, ProtocolSystemCallError, protocol_system_call};
+
 pub mod reserve_balance;
 pub use reserve_balance::{ReserveAccount, ReserveBalanceInit};
 

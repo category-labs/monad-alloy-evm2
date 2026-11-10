@@ -2,6 +2,8 @@
 
 use crate::reserve_balance::{ReserveBalanceSync, ReserveBalanceTracker};
 use crate::{MonadChainContext, MonadHardfork, instructions, monad_version};
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicBool;
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId,
     env::BlockEnv, ethereum::TxEnvelope,
@@ -48,6 +50,12 @@ pub struct MonadEvmExt {
     /// Enforcement is deferred to the enclosing transaction, which must check its
     /// reserves before accepting execution. Restore `false` for ordinary transactions.
     pub preserve_reserve_balance_tracker: bool,
+    /// Replay canonical protocol envelopes from the trusted system sender.
+    ///
+    /// Disabled by default. Enable only for authenticated historical block replay,
+    /// never transaction-pool admission. See [`crate::protocol`] for validation rules.
+    pub protocol_replay: bool,
+    pub(crate) protocol_dispatch: Option<Arc<AtomicBool>>,
     pub(crate) reserve_balance_sync: ReserveBalanceSync,
     pub(crate) reserve_execution: crate::reserve_balance::ReserveExecution,
     pub(crate) memory_pool_offset: u64,
