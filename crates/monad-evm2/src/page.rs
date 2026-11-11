@@ -8,7 +8,7 @@
 //!
 //! [MIP-8]: https://mips.monad.xyz/MIPs/MIP-8
 
-use crate::MonadHost;
+use crate::{MonadHardfork, MonadHost, frame_hardfork};
 use alloy_primitives::{Address, U256, keccak256};
 
 /// Number of low storage-key bits used as an offset within a page.
@@ -119,5 +119,108 @@ impl PageAccess {
             | (u64::from(self.current_growth as u16) << 16)
             | (u64::from(self.peak_growth as u16) << 32);
         evm.state_mut().tstore(&TRACKER_ADDRESS, &self.slot, &U256::from(encoded));
+    }
+}
+
+/// Sets the warmth of the page containing `slot` from Monad Ten onward.
+///
+/// Use this after an inspector changes storage warmth outside SLOAD/SSTORE. It
+/// does not load or change the slot, charge gas, or reset the page's write and
+/// growth accounting. Transaction-prewarmed pages stay warm. The change is
+/// journaled and reverts with its frame.
+pub fn set_storage_page_warm(host: &mut MonadHost<'_>, address: Address, slot: U256, warm: bool) {
+    if frame_hardfork(host) < MonadHardfork::MonadTen {
+        return;
+    }
+    let key = StoragePageKey::from_slot(address, slot);
+    let mut page = PageAccess::load(host, key);
+    page.accessed = warm
+        || (0..WORDS_PER_PAGE).any(|offset| {
+            let slot = (key.page << PAGE_SHIFT) + U256::from(offset);
+            host.state().prewarm_set().is_storage_warm(&address, &slot)
+        });
+    page.store(host);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MonadBlockEnv, MonadEvmBuilder, reserve_balance::MonadCheckpoint};
+    use evm2::evm::InMemoryDB;
+
+    #[test]
+    fn inspector_warmth_is_scoped_to_the_page_and_active_fork() {
+        let address = Address::repeat_byte(0x22);
+        for fork in [MonadHardfork::MonadNine, MonadHardfork::MonadTen] {
+            let mut evm = MonadEvmBuilder::new(1).create_evm(
+                fork,
+                MonadBlockEnv::default(),
+                InMemoryDB::default(),
+            );
+            set_storage_page_warm(&mut evm, address, U256::ZERO, true);
+            let same = StoragePageKey::from_slot(address, U256::from(127));
+            let next = StoragePageKey::from_slot(address, U256::from(128));
+            let other = StoragePageKey::from_slot(Address::repeat_byte(0x33), U256::ZERO);
+            assert_eq!(PageAccess::load(&mut evm, same).is_cold(), fork < MonadHardfork::MonadTen);
+            assert!(PageAccess::load(&mut evm, next).is_cold());
+            assert!(PageAccess::load(&mut evm, other).is_cold());
+        }
+    }
+
+    #[test]
+    fn inspector_warmth_preserves_write_charges_and_reverts_with_the_frame() {
+        let address = Address::repeat_byte(0x22);
+        let mut evm = MonadEvmBuilder::new(1).create_evm(
+            MonadHardfork::MonadTen,
+            MonadBlockEnv::default(),
+            InMemoryDB::default(),
+        );
+        let key = StoragePageKey::from_slot(address, U256::ZERO);
+        let cold = MonadCheckpoint::capture(&mut evm).unwrap();
+        set_storage_page_warm(&mut evm, address, U256::ZERO, true);
+        assert_eq!(
+            PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ZERO, U256::ONE),
+            BASE_COST + PAGE_WRITE_COST + STATE_GROWTH_COST
+        );
+        let warm = MonadCheckpoint::capture(&mut evm).unwrap();
+        set_storage_page_warm(&mut evm, address, U256::from(127), false);
+        assert!(PageAccess::load(&mut evm, key).is_cold());
+        warm.revert(&mut evm);
+        assert!(!PageAccess::load(&mut evm, key).is_cold());
+
+        set_storage_page_warm(&mut evm, address, U256::ZERO, false);
+        set_storage_page_warm(&mut evm, address, U256::ZERO, true);
+        assert_eq!(
+            PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ONE, U256::ZERO),
+            BASE_COST
+        );
+        assert_eq!(
+            PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ZERO, U256::ONE),
+            BASE_COST
+        );
+        cold.revert(&mut evm);
+        assert!(PageAccess::load(&mut evm, key).is_cold());
+        assert_eq!(
+            PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ZERO, U256::ONE),
+            BASE_COST + PAGE_WRITE_COST + STATE_GROWTH_COST
+        );
+    }
+
+    #[test]
+    fn cooling_preserves_transaction_prewarmed_pages() {
+        let address = Address::repeat_byte(0x22);
+        let mut evm = MonadEvmBuilder::new(1).create_evm(
+            MonadHardfork::MonadTen,
+            MonadBlockEnv::default(),
+            InMemoryDB::default(),
+        );
+        evm.state_mut().prewarm_storage_slot(&address, U256::from(127));
+        set_storage_page_warm(&mut evm, address, U256::ZERO, false);
+        let page = StoragePageKey::from_slot(address, U256::ZERO);
+        assert!(!PageAccess::load(&mut evm, page).is_cold());
+        let next = StoragePageKey::from_slot(address, U256::from(128));
+        set_storage_page_warm(&mut evm, address, U256::from(128), true);
+        set_storage_page_warm(&mut evm, address, U256::from(128), false);
+        assert!(PageAccess::load(&mut evm, next).is_cold());
     }
 }
