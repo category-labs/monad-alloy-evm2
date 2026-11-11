@@ -116,4 +116,4 @@ cargo check --locked -p monad-evm2 --lib --no-default-features --target thumbv7e
 cargo check --locked -p monad-evm2 --lib --no-default-features --features serde --target thumbv7em-none-eabi
 ```
 
-Licensed under [MIT](../../LICENSE).
+Licensed under [MIT](LICENSE).

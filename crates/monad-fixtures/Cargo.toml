@@ -8,7 +8,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish.workspace = true
+publish = false
 
 [dependencies]
 monad-evm2.workspace = true

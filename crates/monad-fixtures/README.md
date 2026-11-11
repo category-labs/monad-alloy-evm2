@@ -3,6 +3,7 @@
 CLI and library for replaying signed blockchain JSON fixtures with
 [`monad-evm2`](../monad-evm2/README.md), verifying execution commitments, and
 comparing results against the published monad-revm 0.8.0 release.
+This workspace tool is not published to crates.io.
 
 ## Usage
 
