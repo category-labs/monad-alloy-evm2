@@ -1,144 +1,119 @@
 # monad-evm2
 
-Monad execution on [evm2](https://github.com/alloy-rs/evm2).
+Monad execution on [evm2](https://github.com/alloy-rs/evm2), including transaction
+fees, memory and storage pricing, precompiles, staking, reserve balances, and
+inspectors. Import the library as `monad_evm2`.
 
-Import the library as `monad_evm2`. See the [workspace README](../../README.md)
-for construction examples and build and test commands.
+Supports MonadEight, MonadNine, and MonadTen. `MonadNext` retains MonadTen's rules;
+see [hardfork definitions](src/spec.rs) for activation schedules and EIP selections.
 
-Native hosts track reserves and report violations without automatically rejecting
-transactions. The standalone wrapper enables rejection by default. Reserve
-rejection rolls back execution while retaining fees, the sender nonce and EIP-7702
-authorizations. `result.ext.halt_reason` identifies
-`MonadHaltReason::ReserveBalanceViolation`; evm2's native stop code is `Revert`
-to preserve unused CALL gas. Inspectors see the rejection after execution state
-has been rolled back.
+## Runtime usage
 
-`MonadEvm` manages transaction and inspector lifecycles around `MonadHost`, the
-native evm2 host. The current adapter observes root instructions to detect reserve
-violations before native rollback, so enforcing transactions use evm2's inspected interpreter.
-Callers supply block history through `evm.ext_mut().chain`.
-
-`MonadEvmFactory` constructs a native evm2 `Evm<MonadEvmTypes>` from a hardfork,
-runtime version, block and database. It is stateless: the embedder owns its
-inspectors, snapshots and accepted state. Native `transact()` works without a
-reserve inspector. Tracking, `dippedIntoReserve()` and
-`result.ext.dipped_into_reserve` remain available in this mode.
-
-To enable native rejection, set
-`host.ext_mut().revert_on_reserve_balance_violation = true`, compose the
-application's inspector with `reserve_balance::reserve_inspector()` and pass it
-to native `transact_with_inspector()`. `MonadPrecompiles` includes root reserve
-observation; custom providers can use `reserve_precompiles()`. Opted-in ordinary
-execution without the reserve observer is rejected. Installing the observer
-alone does not enable rejection.
-
-Native hosts use their configured hardfork. Embedders that execute new frames
-on separately configured hosts need no shared frame selector. Protocol replay
-works directly through native `transact()` and observes its installed inspector;
-the transaction handler isolates and restores the enclosing Monad context.
-
-`MonadEvmBuilder::new(chain_id)` constructs the standalone `MonadEvm` wrapper.
-Its `limits` field accepts runtime overrides. Both `create_evm()` and
-`create_host()` enable reserve rejection. Set
-`evm.ext_mut().revert_on_reserve_balance_violation = false` to retain tracking
-without rejection. The wrapper owns `MonadExecution`,
-which composes inspectors, supports per-frame hardfork overrides and resolves
-synthetic context together with state. `create_host()` exposes the same
-`(host, execution)` pair for applications wanting that lifecycle explicitly.
-Pass inspectors directly to `execution.transact()` when using this pair.
-
-For external state changes, synchronize reserves before the change and rebase
-afterward. `rebase_reserve_balance_with_originals()` retains transaction-start
-fields for persistent accounts carried into another fork, including accounts
-first debited after the switch. `replace_while_executing()` restores matching
-extension state while retaining live frame, memory and enforcement bookkeeping.
-Use the rebase helper after state replacement: resetting the journal cursor alone
-does not preserve original balances. The `execution` module documents the
-standalone lifecycle.
-
-Standalone inspectors can select a call or creation's Monad hardfork in their
-`call` or `create` hook:
+Execute a local transfer with an explicitly supplied sender:
 
 ```rust
-message.ext.hardfork = Some(MonadHardfork::MonadNine);
+use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, U256};
+use evm2::evm::{AccountInfo, InMemoryDB};
+use monad_evm2::{
+    MONAD_MAINNET_CHAIN_ID, MonadBlockEnv, MonadEvmBuilder, MonadHardfork, MonadTxEnvelope,
+};
+
+let sender = Address::repeat_byte(0x11);
+let mut db = InMemoryDB::default();
+db.insert_account_info(&sender, AccountInfo::default().with_balance(U256::from(1_000_000)));
+
+let mut evm = MonadEvmBuilder::new(MONAD_MAINNET_CHAIN_ID).create_evm(
+    MonadHardfork::MonadTen,
+    MonadBlockEnv::default(),
+    db,
+);
+let tx = Recovered::new_unchecked(
+    MonadTxEnvelope::Legacy(TxLegacy {
+        chain_id: Some(MONAD_MAINNET_CHAIN_ID),
+        to: Address::repeat_byte(0x22).into(),
+        value: U256::from(1),
+        gas_limit: 100_000,
+        gas_price: 1,
+        ..Default::default()
+    }),
+    sender,
+);
+
+let result = evm.transact(&tx).unwrap().commit();
+assert!(result.is_success());
+assert_eq!(result.tx_gas_used(), 100_000);
+assert_eq!(result.total_gas_spent, 21_000);
 ```
 
-Descendants inherit that hardfork unless overridden, and returning restores the
-parent's rules. `frame_hardfork(host)` reports the selected Monad rules. evm2's
-configuration remains fixed throughout execution; its `config_spec_id()` and
-interpreter `spec()` describe that underlying configuration. Transaction
-admission and fees use the configured fork. The default precompiles follow each
-frame; custom providers manage their own selection. `reset_precompiles()`
-reinstalls the default provider.
+`transact()` returns pending state: `commit()` accepts it; `discard()` or dropping
+the handle rolls it back. Supply block history through `evm.ext_mut().chain` and
+runtime overrides through the builder's `limits`. Use `transact_with_inspector()`
+to inspect one transaction or `set_inspector()` to install an inspector.
 
-`monad_precompiles()` returns `MonadPrecompiles`. Its relocation API allows
-cryptographic precompiles to move, but rejects nonidentity moves from staking
-(`0x1000`) and reserve balance (`0x1001`), whose handlers depend on their protocol
-addresses. `MonadEvm` applies the same restriction to installed custom providers.
-Rejected batches leave all fork tables unchanged. Direct map customization is an
-explicit override and remains the caller's responsibility.
+Ordinary transaction receipts report the full gas limit through `tx_gas_used()`.
+For estimation and profiling, use `total_gas_spent`, which retains execution
+consumption including intrinsic gas. `execution_gas_spent()` includes the charge
+floor and is intended for block accounting.
 
-`MonadEvm::system_call()` uses the installed inspector;
-`MonadEvm::system_call_with_inspector()` borrows one for a single call. Staking
-block-lifecycle helpers also use the installed inspector. These standalone
-system calls bypass ordinary transaction validation, fees, nonce updates and
-reserve enforcement, and preserve any enclosing synthetic call's reserve
-context. Their state handles support commit, discard and detach.
+## Execution modes
 
-For trusted historical block replay, set `evm.ext_mut().protocol_replay = true`
-before passing recovered envelopes to `transact()`. Canonical legacy envelopes
-from `SYSTEM_ADDRESS` execute reward, snapshot and epoch-change syscalls with
-zero receipt gas. Replay validates the chain ID and nonce, increments the system
-nonce, and mints reward value to staking. Failure rolls back the entire
-transaction. Installed and borrowed inspectors observe these calls, and any
-enclosing synthetic context is restored.
+| Entry point | Reserve rejection | Lifecycle ownership |
+| --- | --- | --- |
+| `MonadEvmBuilder` | Enabled by default. | Standalone wrapper composes inspectors and manages synthetic-call context. |
+| `MonadEvmFactory` | Disabled by default; tracking and queries remain available. | Embedder owns inspectors, snapshots, and state resolution. |
 
-`protocol_system_call()` classifies envelopes without changing state. The caller
-must authenticate the system sender and validate block ordering, epoch scheduling
-and reward amounts. Replay is disabled by default and must remain disabled for
-transaction-pool admission. Direct system-call helpers retain their separate
-nonce and prefunding semantics.
+To enforce reserves on a native host, set
+`host.ext_mut().revert_on_reserve_balance_violation = true` and pass a
+`reserve_balance::reserve_inspector()` adapter to `transact_with_inspector()`.
+Preserved synthetic calls defer rejection to their enclosing transaction.
+Reserve rejection rolls back execution while retaining fees, nonce updates, and
+authorizations. The result identifies it as `MonadHaltReason::ReserveBalanceViolation`.
 
-Internal-call simulations may set `preserve_reserve_balance_tracker` after
-initializing or copying the enclosing transaction's reserve context. These
-synthetic calls retain its original balance baselines and defer enforcement to
-the enclosing transaction. The standalone wrapper restores context when a
-synthetic call is discarded and keeps tracking changes when committed. Native
-embedders own this context resolution alongside their state lifecycle.
-When rejection is enabled, the enclosing transaction enforces reserves before
-accepting execution. Restore the preservation flag to `false` for ordinary
-transactions. `MonadCheckpoint` and
-`MonadStateSnapshot` pair state with Monad
-bookkeeping; `rebase_reserve_balance` rebuilds tracking against replacement fork
-state and its chain context.
-
-Staking follows C++ calldata-consumption rules, accepts zero-value delegation as
-a no-op, applies the delegation minimum to compounded rewards, and emits
-delegation events before validator status changes.
+`MonadEvmBuilder::create_host()` exposes the standalone `(host, execution)` pair.
+The [execution API](src/execution.rs) documents inspector composition, per-frame
+hardfork selection, and synthetic state handling. For fork switches, use the
+[reserve rebase helpers](src/reserve_balance/sync.rs) to retain original balances.
+[System calls](src/system.rs) and [trusted protocol replay](src/protocol.rs)
+provide staking lifecycle execution.
 
 Validator registration retains monad-revm 0.8.0's unverified signatures and
-simplified public-key lookup identifiers. This differs from validator admission
-in the C++ consensus client.
+simplified public-key identifiers.
 
-## Features
+## Cargo features
 
 | Feature | Purpose | Default |
 | --- | --- | --- |
-| `std` | Enable the standard library in evm2 and optional serialization support. | Yes |
-| `serde` | Enable Serde support. | No |
-| `c-kzg` | Enable evm2's C KZG backend. | Yes |
-| `secp256k1` | Enable evm2's native secp256k1 backend. | Yes |
-| `blst` | Enable evm2's BLST backend. | Yes |
-| `portable` | Enable portable builds of the selected KZG and BLST backends. | Yes |
-| `memory_limit` | Compatibility feature; memory limits are always enforced. | No |
+| `std` | Standard-library support. | Yes |
+| `serde` | Serialization for local public types; supports `no_std`. | No |
+| `c-kzg` | C KZG backend. | Yes |
+| `secp256k1` | Native secp256k1 backend. | Yes |
+| `blst` | BLST backend. | Yes |
+| `portable` | Portable KZG and BLST builds. | Yes |
+| `memory_limit` | Compatibility flag; memory limits always apply. | No |
 
-Memory limits are shared by active call frames and capped at 8 MiB for MonadNine
-and later, including builds with default features disabled.
+Memory is shared by active frames and capped at 8 MiB from MonadNine onward.
+Disable default features for `no_std` builds.
 
-Disable default features for `no_std` builds. The `serde` feature supports
-`no_std` and enables the local Serde dependency without enabling evm2's
-engine-state serialization.
+## Local development
 
-## License
+Run from the workspace root. [rust-toolchain.toml](../../rust-toolchain.toml)
+selects Rust 1.96.0 with rustfmt and Clippy. LLVM is not required.
 
-MIT. See [LICENSE](../../LICENSE).
+```sh
+cargo test --locked -p monad-evm2 --all-features
+cargo test --locked -p monad-evm2 --no-default-features --features std,serde
+cargo clippy --locked -p monad-evm2 --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+cargo doc --locked -p monad-evm2 --no-deps --all-features --open
+```
+
+Check without the standard library:
+
+```sh
+rustup target add thumbv7em-none-eabi
+cargo check --locked -p monad-evm2 --lib --no-default-features --target thumbv7em-none-eabi
+cargo check --locked -p monad-evm2 --lib --no-default-features --features serde --target thumbv7em-none-eabi
+```
+
+Licensed under [MIT](../../LICENSE).

@@ -1,13 +1,12 @@
 # monad-evm2-fixtures
 
-Replay signed blockchain JSON fixtures through
-[`monad-evm2`](../monad-evm2/README.md), verify their execution commitments, and
-compare individual operations with the published
-`monad-revm = 0.8.0` release.
+CLI and library for replaying signed blockchain JSON fixtures with
+[`monad-evm2`](../monad-evm2/README.md), verifying execution commitments, and
+comparing results against the published monad-revm 0.8.0 release.
 
-## Running
+## Usage
 
-From the workspace root, supply files or directories:
+Run from the workspace root, supplying JSON files or directories:
 
 ```sh
 cargo run --locked -p monad-evm2-fixtures -- /path/to/blockchain_tests
@@ -15,95 +14,53 @@ cargo run --locked -p monad-evm2-fixtures -- /path/to/blockchain_tests --filter 
 cargo run --locked -p monad-evm2-fixtures -- /path/to/blockchain_tests --json --fail-on-unsupported
 ```
 
-Reports go to stdout; invocation errors go to stderr. Directories are searched
-recursively without following symlinks. Paths are deduplicated and sorted;
-`index.json` manifests are excluded. Malformed files remain failures even when
-filtering by case name. Every selected case is reported.
-
-## Verification
-
-Each case starts from its `pre` allocation and executes blocks in order. The runner checks:
-
-- Genesis state and RLP, block-header/RLP agreement, block linkage, transaction
-  sender recovery, and transaction and withdrawal roots.
-- Block gas used, receipts, logs bloom, and complete state roots.
-- Final block hash, optional final account assertions, and `postStateHash`.
-  Account checks include existence, nonce, balance, bytecode and storage.
-
-Execution includes EIP-4788 and EIP-2935 system calls when their contracts are
-deployed, then transactions and withdrawals. Reserve decisions receive the
-current block's senders and recovered authorities, plus parent and grandparent
-participants. Historical block hashes are supplied to both engines.
-
-Before each transaction or system call, the reference receives the same complete
-pre-state as the adapter. Comparison covers success/revert/halt status, consumed
-gas, refunds, output, logs, created address and the complete post-state root.
-The adapter's committed state supplies subsequent operations. A reference
-difference therefore cannot change the inputs of later comparisons.
-
-Monad receipts charge the full transaction gas limit. The runner checks that
-independently against the adapter and fixtures. The 0.8.0 reference's receipt gas
-is normalized to this rule, and each changed reference receipt is counted in
-`corrected_reference_receipts`. Consumed execution gas and fee effects remain
-checked separately; normalization does not alter either engine's execution.
-
-The published reference tracks reserve balances without automatically rejecting
-violations. The adapter enforces them. These differences remain visible in
-`cases[].parity.differences`, including both observations and state roots.
-Reference execution errors are also differences. No cases or fields are silently
-exempted by the runner.
-
-`status` describes the fixture assertions; `parity` describes the reference
-comparison. A fixture can pass while parity differs. Comparisons are recorded up
-to the first fixture assertion or execution failure.
+Directories are searched recursively. `--filter` matches case-name substrings;
+`--json` writes a structured report to stdout. Invocation errors go to stderr.
+Rust callers can use [`monad_evm2_fixtures::run`](src/lib.rs) to obtain a `Report`.
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | At least one fixture passed, no failures or parity differences, and no unsupported cases when strict mode is requested. |
-| `1` | A fixture failed, parity differed, or strict mode encountered unsupported cases alongside executable cases. |
+| `0` | Cases passed without parity differences; unsupported cases are allowed unless strict mode is enabled. |
+| `1` | Fixture failure, parity difference, or unsupported case with `--fail-on-unsupported`. |
 | `2` | Invocation/discovery error, empty selection, or entirely unsupported input. |
 
-## Supported inputs
+## Coverage and reports
 
-Blockchain fixtures support `MONAD_EIGHT`, `MONAD_NINE`, and timestamp transitions
-such as `MONAD_EIGHTToMONAD_NINEAtTime30`. Fork selection uses fixture timestamps
-and explicit chain IDs. Input parsing follows the
-[monad-revm fixture runner](https://github.com/category-labs/monad-revm/tree/9082f9b850998df1b5322dec5d38d129e565d0ea/crates/monad-fixtures).
+- Supports `MONAD_EIGHT`, `MONAD_NINE`, and timestamp transitions such as
+  `MONAD_EIGHTToMONAD_NINEAtTime30`.
+- Verifies block linkage, transaction recovery, gas charges, receipt and state
+  roots, logs bloom, withdrawals, and final-state assertions.
+- Compares each transaction or system call with the reference using the same
+  pre-state: status, consumed gas, refunds, output, logs, and resulting state.
 
-Other forks and fixture formats, invalid-block expectations, genesis above block
-zero, nonzero excess blob gas, ommers, unsupported seal engines, and unknown
-semantic fields are reported as unsupported. Blob transactions are rejected.
-Hex quantities may omit leading zeros; decimal strings and JSON integers are
-also accepted. Transactions and withdrawals come from block RLP, and the declared
-header must match it.
+Fixture `status` and reference `parity` are reported separately. The reference's
+receipt gas is normalized to Monad's full-limit charge; consumed gas and fee
+effects remain checked separately. Automatic reserve rejection differs from
+monad-revm 0.8.0 and remains visible in the parity report.
 
-Verification covers valid-block execution. It does not validate every consensus
-header rule, epoch transition, or staking reward/snapshot lifecycle, and it does
-not execute the C++ node. Focused library tests cover MonadTen and MonadNext.
+Unsupported formats and rules are reported explicitly. Verification covers
+valid-block execution, not every consensus header rule or staking lifecycle.
+MonadTen and MonadNext are covered by focused runtime tests.
 
-## CI corpus
+## Local development
 
-CI checks out the execution-spec fixtures at
-[`12e2c05bcfa6daeef9c0f4c54c5c7a13fde39e89`](https://github.com/category-labs/monad-execution-specs/tree/12e2c05bcfa6daeef9c0f4c54c5c7a13fde39e89/test/execution/fixtures/blockchain_tests).
-The expected result is 226 passes, one known `highGasUsage` fixture mismatch,
-and zero unsupported cases. Its 2,155 comparisons contain 301 reserve-enforcement
-differences across 18 cases and 702 normalized reference receipts.
+Run from the workspace root using the toolchain in
+[rust-toolchain.toml](../../rust-toolchain.toml). Python 3 is needed for the CI
+acceptance checks. This crate requires `std` and has no optional Cargo features.
 
-The `highGasUsage` mismatch comes from the execution spec allowing reserve
-spending when fees exceed the reserve; the adapter follows the C++ reserve rule.
-The failed status and differing receipt roots remain in the report.
+```sh
+cargo test --locked -p monad-evm2-fixtures
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+cargo clippy --locked -p monad-evm2-fixtures --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo doc --locked -p monad-evm2-fixtures --no-deps --open
+```
 
-[The acceptance policy](../../.github/scripts/fixture_ci.py) checks the complete
-fixture inventory, counters, exact known failure, and exact parity observations.
-Known reserve differences must retain matching gas, refunds, receipt charges and
-creation addresses, with empty adapter logs/output. The
-[expectations file](../../.github/scripts/fixture_expectations.json) pins each
-case's difference count and SHA-256 of its full observations, serialized as JSON
-with sorted keys and compact separators. Changed outcomes, missing comparisons,
-new differences and unexpected passes fail CI. The raw JSON report is uploaded
-even when the check fails.
+The tests generate their own fixtures and require no external corpus.
 
-To reproduce with a checkout at that revision:
+To reproduce CI, use the
+[pinned execution-spec fixtures](https://github.com/category-labs/monad-execution-specs/tree/12e2c05bcfa6daeef9c0f4c54c5c7a13fde39e89/test/execution/fixtures/blockchain_tests).
+With that checkout at `../monad-execution-specs`:
 
 ```sh
 cargo build --locked -p monad-evm2-fixtures
@@ -113,14 +70,9 @@ python3 .github/scripts/fixture_ci.py \
   --report target/fixture-report.json
 ```
 
-## Runner tests
+The [acceptance policy](../../.github/scripts/fixture_ci.py) checks the complete
+corpus against [recorded expectations](../../.github/scripts/fixture_expectations.json),
+including the known `highGasUsage` fixture mismatch and reserve-enforcement
+differences. Raw failures and differences remain in the JSON report.
 
-```sh
-cargo test --locked -p monad-evm2-fixtures
-python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-```
-
-Tests construct signed fixtures with independently calculated expectations and
-deliberately corrupt roots, receipts and reports. They require no external corpus.
-Both crates are workspace members. This tool requires `std` and memory limits;
-target `-p monad-evm2` explicitly for runtime feature and `no_std` checks.
+Licensed under [MIT](../../LICENSE).
