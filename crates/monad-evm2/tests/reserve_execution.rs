@@ -68,6 +68,7 @@ fn automatic_enforcement_reverts_value_but_keeps_fees_and_nonce() {
     for spec in MonadHardfork::ALL {
         for restricted in [false, true] {
             let mut evm = evm(spec, restricted);
+            assert!(evm.ext().revert_on_reserve_balance_violation);
             let result = evm.transact(&tx(TARGET, 1, 0)).unwrap().commit();
             assert_eq!(result.is_success(), !restricted, "{spec}");
             assert_eq!(result.ext.reverted_for_reserve_balance, restricted);
@@ -83,6 +84,26 @@ fn automatic_enforcement_reverts_value_but_keeps_fees_and_nonce() {
             assert!(next.is_success());
             assert!(!next.ext.dipped_into_reserve);
         }
+    }
+}
+
+#[test]
+fn standalone_rejection_can_be_disabled_without_disabling_tracking() {
+    for spec in MonadHardfork::ALL {
+        let mut evm = evm(spec, true);
+        evm.ext_mut().revert_on_reserve_balance_violation = false;
+        let result = evm.transact(&tx(TARGET, 1, 0)).unwrap().commit();
+        assert!(result.is_success() && result.ext.dipped_into_reserve);
+        assert!(!result.ext.reverted_for_reserve_balance);
+        assert_eq!(result.ext.halt_reason, None);
+        assert_eq!(balance(&mut evm, TARGET), U256::ONE);
+        assert_eq!(balance(&mut evm, SENDER), U256::from(INITIAL - 100_000 - 1));
+
+        evm.ext_mut().revert_on_reserve_balance_violation = true;
+        let result = evm.transact(&tx(TARGET, 1, 1)).unwrap().commit();
+        assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
+        assert_eq!(balance(&mut evm, TARGET), U256::ONE);
+        assert_eq!(balance(&mut evm, SENDER), U256::from(INITIAL - 200_000 - 1));
     }
 }
 

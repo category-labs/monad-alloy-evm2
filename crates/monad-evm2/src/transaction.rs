@@ -47,10 +47,10 @@ impl core::error::Error for SystemSenderIsAuthority {}
 
 /// Returns Monad's transaction handlers for a native evm2 host.
 ///
-/// Rules follow the host's configured hardfork. Pair ordinary execution with
+/// Rules follow the host's configured hardfork. Native execution tracks reserves
+/// without automatically rejecting violations. Opting into rejection requires
 /// [`crate::reserve_balance::reserve_inspector`] and [`crate::MonadPrecompiles`].
-/// Execution rejects ordinary calls that omit the reserve observer. Trusted
-/// protocol replay isolates its context within the handler and needs no adapter.
+/// Trusted protocol replay isolates its context within the handler and needs no adapter.
 pub fn monad_tx_registry(
     _spec: MonadHardfork,
 ) -> TxRegistry<MonadEvmTypes, TxResult<MonadEvmTypes>> {
@@ -220,7 +220,7 @@ struct MissingMonadInspector;
 
 impl fmt::Display for MissingMonadInspector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Monad transactions require the Monad execution inspector")
+        f.write_str("reserve-balance enforcement requires the Monad execution inspector")
     }
 }
 
@@ -265,14 +265,15 @@ fn execute_inner(
         &mut gas,
     )?;
     begin_reserve_balance_tx(host, caller, gas_price, gas_limit)?;
-    if !host.ext().preserve_reserve_balance_tracker {
+    let enforce_reserves = host.ext().revert_on_reserve_balance_violation
+        && !host.ext().preserve_reserve_balance_tracker;
+    if enforce_reserves {
         host.ext_mut().reserve_execution.checkpoint = Some(host.state().checkpoint());
         host.ext_mut().reserve_execution.depth = host.version().initial_call_depth;
     }
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
-    if !host.ext().reserve_execution.observed {
-        // Native callers must compose the same mandatory observer as the wrapper.
-        // Reject execution that omitted reserve adjudication.
+    if enforce_reserves && !host.ext().reserve_execution.observed {
+        // Opted-in native callers must compose the same observer as the wrapper.
         return Err(HandlerError::external(MissingMonadInspector));
     }
     sync_reserve_balance(host)?;

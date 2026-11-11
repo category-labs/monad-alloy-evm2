@@ -5,8 +5,9 @@ Monad execution on [evm2](https://github.com/alloy-rs/evm2).
 Import the library as `monad_evm2`. See the [workspace README](../../README.md)
 for construction examples and build and test commands.
 
-Ordinary transactions enforce reserve balances automatically. Reserve rejection
-rolls back execution while retaining fees, the sender nonce and EIP-7702
+Native hosts track reserves and report violations without automatically rejecting
+transactions. The standalone wrapper enables rejection by default. Reserve
+rejection rolls back execution while retaining fees, the sender nonce and EIP-7702
 authorizations. `result.ext.halt_reason` identifies
 `MonadHaltReason::ReserveBalanceViolation`; evm2's native stop code is `Revert`
 to preserve unused CALL gas. Inspectors see the rejection after execution state
@@ -14,16 +15,22 @@ has been rolled back.
 
 `MonadEvm` manages transaction and inspector lifecycles around `MonadHost`, the
 native evm2 host. The current adapter observes root instructions to detect reserve
-violations before native rollback, so transactions use evm2's inspected interpreter.
+violations before native rollback, so enforcing transactions use evm2's inspected interpreter.
 Callers supply block history through `evm.ext_mut().chain`.
 
 `MonadEvmFactory` constructs a native evm2 `Evm<MonadEvmTypes>` from a hardfork,
 runtime version, block and database. It is stateless: the embedder owns its
-inspectors, snapshots and accepted state. For each ordinary transaction, compose
-the application's inspector with `reserve_balance::reserve_inspector()` and
-pass it to native `transact_with_inspector()`. `MonadPrecompiles` includes root
-reserve observation; custom providers can use `reserve_precompiles()`.
-Ordinary execution without the reserve observer is rejected.
+inspectors, snapshots and accepted state. Native `transact()` works without a
+reserve inspector. Tracking, `dippedIntoReserve()` and
+`result.ext.dipped_into_reserve` remain available in this mode.
+
+To enable native rejection, set
+`host.ext_mut().revert_on_reserve_balance_violation = true`, compose the
+application's inspector with `reserve_balance::reserve_inspector()` and pass it
+to native `transact_with_inspector()`. `MonadPrecompiles` includes root reserve
+observation; custom providers can use `reserve_precompiles()`. Opted-in ordinary
+execution without the reserve observer is rejected. Installing the observer
+alone does not enable rejection.
 
 Native hosts use their configured hardfork. Embedders that execute new frames
 on separately configured hosts need no shared frame selector. Protocol replay
@@ -31,7 +38,10 @@ works directly through native `transact()` and observes its installed inspector;
 the transaction handler isolates and restores the enclosing Monad context.
 
 `MonadEvmBuilder::new(chain_id)` constructs the standalone `MonadEvm` wrapper.
-Its `limits` field accepts runtime overrides. The wrapper owns `MonadExecution`,
+Its `limits` field accepts runtime overrides. Both `create_evm()` and
+`create_host()` enable reserve rejection. Set
+`evm.ext_mut().revert_on_reserve_balance_violation = false` to retain tracking
+without rejection. The wrapper owns `MonadExecution`,
 which composes inspectors, supports per-frame hardfork overrides and resolves
 synthetic context together with state. `create_host()` exposes the same
 `(host, execution)` pair for applications wanting that lifecycle explicitly.
@@ -95,8 +105,9 @@ synthetic calls retain its original balance baselines and defer enforcement to
 the enclosing transaction. The standalone wrapper restores context when a
 synthetic call is discarded and keeps tracking changes when committed. Native
 embedders own this context resolution alongside their state lifecycle.
-The enclosing caller must check reserves before accepting execution and restore
-the flag to `false` for ordinary transactions. `MonadCheckpoint` and
+When rejection is enabled, the enclosing transaction enforces reserves before
+accepting execution. Restore the preservation flag to `false` for ordinary
+transactions. `MonadCheckpoint` and
 `MonadStateSnapshot` pair state with Monad
 bookkeeping; `rebase_reserve_balance` rebuilds tracking against replacement fork
 state and its chain context.

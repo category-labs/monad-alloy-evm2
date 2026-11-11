@@ -50,6 +50,7 @@ fn host(spec: MonadHardfork, code: &[u8]) -> (Evm<'static, MonadEvmTypes>, Monad
         execution.precompiles(),
         MonadEvmExt::default(),
     );
+    host.ext_mut().revert_on_reserve_balance_violation = true;
     host.ext_mut().chain.parent_senders_and_authorities.insert(SENDER);
     (host, execution)
 }
@@ -143,12 +144,13 @@ impl Inspector<MonadEvmTypes> for Trace {
 }
 
 #[test]
-fn native_factory_enforces_reserves_without_a_frame_selector() {
+fn native_opt_in_enforces_reserves_without_a_frame_selector() {
     for spec in MonadHardfork::ALL {
         for terminal in [op::STOP, op::REVERT, op::INVALID] {
             for value in [0, 1] {
                 let code = [op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::PUSH0, terminal];
                 let mut host = native_host(spec, &code);
+                host.ext_mut().revert_on_reserve_balance_violation = true;
                 let mut trace = Trace::default();
                 let result = host
                     .transact_with_inspector(
@@ -244,10 +246,13 @@ fn native_observer_enforces_reserves_before_success_and_failure_rollback() {
 }
 
 #[test]
-fn native_entrypoint_rejects_a_missing_observer_without_committing_fees() {
+fn native_opt_in_requires_an_observer_without_committing_fees() {
     let (mut host, _) = host(MonadHardfork::MonadTen, &[]);
     let error = host.transact(&tx(1, 1)).unwrap_err();
-    assert!(error.to_string().contains("Monad execution inspector"));
+    assert_eq!(
+        error.to_string(),
+        "reserve-balance enforcement requires the Monad execution inspector"
+    );
     assert_eq!(host.state_mut().account(&SENDER).unwrap().balance(), U256::from(INITIAL));
     assert_eq!(host.state_mut().account(&SENDER).unwrap().nonce(), 0);
 }
@@ -255,6 +260,7 @@ fn native_entrypoint_rejects_a_missing_observer_without_committing_fees() {
 #[test]
 fn native_precompile_observation_retains_reserve_rejection_on_failure() {
     let mut host = native_host(MonadHardfork::MonadTen, &[]);
+    host.ext_mut().revert_on_reserve_balance_violation = true;
     let precompile = Address::with_last_byte(9);
     let tx = Recovered::new_unchecked(
         MonadTxEnvelope::Legacy(TxLegacy {
@@ -498,4 +504,124 @@ fn context_replacement_during_execution_retains_reserve_adjudication_and_frame_s
     assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
     assert_eq!(host.state_mut().account(&TARGET).unwrap().balance(), U256::ZERO);
     assert_eq!(frame_hardfork(&host), MonadHardfork::MonadTen);
+}
+
+#[test]
+fn native_defaults_report_reserves_with_or_without_an_inspector() {
+    for spec in MonadHardfork::ALL {
+        for terminal in [op::STOP, op::REVERT, op::INVALID] {
+            for mode in 0..4 {
+                let code = [op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::PUSH0, terminal];
+                let mut host = native_host(spec, &code);
+                assert!(!host.ext().revert_on_reserve_balance_violation);
+                let mut trace = Trace::default();
+                let tx = tx(1, 1);
+                let pending = match mode {
+                    0 => host.transact(&tx),
+                    1 => host.transact_with_inspector(&tx, &mut trace),
+                    2 => {
+                        host.transact_with_inspector(&tx, &mut reserve_inspector(Some(&mut trace)))
+                    }
+                    _ => {
+                        host.set_inspector(Trace::default());
+                        host.transact(&tx)
+                    }
+                }
+                .unwrap();
+                let result = pending.commit();
+                let success = terminal == op::STOP;
+                assert_eq!(result.is_success(), success);
+                assert_eq!(result.ext.dipped_into_reserve, success);
+                assert!(!result.ext.reverted_for_reserve_balance);
+                assert_eq!(result.ext.halt_reason, None);
+                assert_eq!(result.tx_gas_used(), GAS);
+                assert_eq!(
+                    host.state_mut().account(&SENDER).unwrap().balance(),
+                    U256::from(INITIAL - GAS - u64::from(success))
+                );
+                assert_eq!(host.state_mut().account(&SENDER).unwrap().nonce(), 1);
+                assert_eq!(
+                    host.state_mut().account(&BENEFICIARY).unwrap().balance(),
+                    U256::from(GAS)
+                );
+                assert_eq!(
+                    host.state_mut().account(&TARGET).unwrap().balance(),
+                    U256::from(u8::from(success))
+                );
+                if mode == 1 || mode == 2 {
+                    assert_eq!((trace.steps, trace.step_ends, trace.calls), (1, 1, 1));
+                    assert_eq!(trace.halt, None);
+                }
+                assert!(!host.ext().reserve_balance.tracking_enabled());
+            }
+        }
+    }
+}
+
+#[test]
+fn native_preserved_calls_defer_rejection_without_a_reserve_observer() {
+    for enforce in [false, true] {
+        let mut host = native_host(MonadHardfork::MonadTen, &[]);
+        host.ext_mut().revert_on_reserve_balance_violation = enforce;
+        preserve(&mut host);
+        let result = host.transact(&tx(1, 0)).unwrap().commit();
+        assert!(result.is_success() && result.ext.dipped_into_reserve);
+        assert!(!result.ext.reverted_for_reserve_balance);
+        assert!(host.ext().reserve_balance.tracking_enabled());
+        assert!(dipped_into_reserve(&mut host).unwrap());
+    }
+}
+
+#[test]
+fn native_report_only_queries_reserves_and_resolves_state_normally() {
+    let mut code = vec![op::PUSH4];
+    code.extend(DIPPED_INTO_RESERVE_SELECTOR);
+    code.extend([
+        op::PUSH0,
+        op::MSTORE,
+        op::PUSH1,
+        32,
+        op::PUSH0,
+        op::PUSH1,
+        4,
+        op::PUSH1,
+        28,
+        op::PUSH0,
+        op::PUSH2,
+        0x10,
+        1,
+        op::PUSH2,
+        0x03,
+        0xe8,
+        op::CALL,
+        op::POP,
+        op::PUSH1,
+        32,
+        op::PUSH0,
+        op::RETURN,
+    ]);
+    for spec in MonadHardfork::ALL.into_iter().skip(1) {
+        let mut host = native_host(spec, &code);
+        let tx = tx(1, 1);
+        host.validate_tx(&tx).unwrap();
+        assert!(!host.ext().reserve_balance.tracking_enabled());
+        for mode in 0..4 {
+            let pending = host.transact(&tx).unwrap();
+            assert_eq!(U256::from_be_slice(&pending.result().output), U256::ONE);
+            assert!(pending.result().ext.dipped_into_reserve);
+            match mode {
+                0 => drop(pending),
+                1 => assert!(pending.discard().is_success()),
+                2 => assert!(pending.detach().result.is_success()),
+                _ => assert!(pending.commit().is_success()),
+            }
+            let committed = mode == 3;
+            assert_eq!(
+                host.state_mut().account(&SENDER).unwrap().balance(),
+                U256::from(INITIAL - if committed { GAS + 1 } else { 0 })
+            );
+            assert_eq!(host.state_mut().account(&SENDER).unwrap().nonce(), u64::from(committed));
+            assert!(!host.ext().reserve_balance.tracking_enabled());
+        }
+    }
 }

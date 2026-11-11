@@ -1,7 +1,7 @@
 //! Monad execution on evm2.
 //!
 //! [`MonadEvmFactory`] constructs native hosts; [`MonadEvmBuilder`] constructs the
-//! standalone [`MonadEvm`] wrapper with automatic inspector composition.
+//! standalone [`MonadEvm`] wrapper with reserve rejection enabled by default.
 //! [`monad_version`] supplies the fork's gas parameters and runtime limits, and
 //! [`MonadLimits`] allows callers to override those limits.
 

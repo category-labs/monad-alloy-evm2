@@ -34,10 +34,11 @@ The [runtime documentation](crates/monad-evm2/README.md) describes reserve
 enforcement, per-frame hardfork selection, inspectors, protocol replay, system
 calls, and optional features.
 
-Applications that own a native evm2 host use the stateless `MonadEvmFactory` and
-compose their inspector with `reserve_balance::reserve_inspector()`. The
-`MonadEvmBuilder` supplies the standalone wrapper with per-frame fork selection
-and synthetic-call context handling. Both paths share Monad's protocol handlers;
+Applications that own a native evm2 host use the stateless `MonadEvmFactory`.
+Native hosts track reserves without automatically rejecting violations; opting
+into rejection requires the reserve inspector. `MonadEvmBuilder` enables rejection
+by default and supplies the standalone wrapper with per-frame fork selection and
+synthetic-call context handling. Both paths share Monad's protocol handlers;
 memory caps also apply with default features disabled.
 
 ## Fixture replay

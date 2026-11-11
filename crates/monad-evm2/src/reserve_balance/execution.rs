@@ -47,8 +47,11 @@ pub(crate) struct ReserveInspector<'a> {
 
 /// Composes reserve enforcement around an application's native inspector.
 ///
-/// Create a fresh adapter for each ordinary transaction and pass it to native
-/// `transact_with_inspector`. Use [`crate::MonadPrecompiles`] or wrap custom
+/// Required for ordinary transactions when
+/// [`crate::MonadEvmExt::revert_on_reserve_balance_violation`] is enabled.
+/// Create a fresh adapter for each transaction and pass it to native
+/// `transact_with_inspector`. Installing it alone does not enable rejection.
+/// Use [`crate::MonadPrecompiles`] or wrap custom
 /// providers with [`reserve_precompiles`] so failed root precompiles are observed
 /// before rollback. This adapter uses the host's configured hardfork; it does not
 /// require a frame selector or manage synthetic-call commit and discard.

@@ -11,8 +11,10 @@ use evm2::{
 
 /// The native host used by Monad instructions, precompiles and inspectors.
 ///
-/// Use [`crate::reserve_balance::reserve_inspector`] for ordinary native transactions.
-/// [`crate::MonadEvm`] adds standalone inspector and synthetic-context handling.
+/// Reserve tracking is always available; automatic rejection is opt-in through
+/// [`MonadEvmExt::revert_on_reserve_balance_violation`] and
+/// [`crate::reserve_balance::reserve_inspector`]. [`crate::MonadEvm`] enables
+/// rejection by default and adds inspector and synthetic-context handling.
 pub type MonadHost<'a> = Evm<'a, MonadEvmTypes>;
 
 /// Block inputs visible to a Monad EVM.
@@ -45,11 +47,19 @@ pub struct MonadEvmExt {
     pub chain: MonadChainContext,
     /// Reserve-balance state for the executing transaction.
     pub reserve_balance: ReserveBalanceTracker,
+    /// Reject ordinary transactions that violate reserve-balance rules.
+    ///
+    /// Disabled by default for native hosts. Enabling this requires
+    /// [`crate::reserve_balance::reserve_inspector`] so rejection precedes user
+    /// end callbacks and observes failures before native rollback.
+    /// [`crate::MonadEvmBuilder`] enables it by default. Tracking and the
+    /// reserve-balance precompile remain available when rejection is disabled.
+    pub revert_on_reserve_balance_violation: bool,
     /// Preserve an enclosing transaction's reserve tracker across synthetic calls.
     ///
     /// Only internal-call simulations may set this. An initialized tracker is required.
-    /// Enforcement is deferred to the enclosing transaction, which must check its
-    /// reserves before accepting execution. Restore `false` for ordinary transactions.
+    /// When rejection is enabled, enforcement is deferred to the enclosing
+    /// transaction. Restore `false` for ordinary transactions.
     pub preserve_reserve_balance_tracker: bool,
     /// Replay canonical protocol envelopes from the trusted system sender.
     ///

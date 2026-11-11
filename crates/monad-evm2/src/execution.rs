@@ -30,8 +30,9 @@
 //! # Ok::<(), evm2::registry::HandlerError>(())
 //! ```
 //!
-//! Native embedders can instead use [`crate::MonadEvmFactory`] with
-//! [`crate::reserve_balance::reserve_inspector`] and [`crate::MonadPrecompiles`].
+//! Native embedders can instead use [`crate::MonadEvmFactory`], opting into
+//! reserve rejection with [`MonadEvmExt::revert_on_reserve_balance_violation`]
+//! and [`crate::reserve_balance::reserve_inspector`].
 //! That path follows the native host's configured hardfork and leaves snapshots,
 //! nested state acceptance and synthetic-context resolution to the embedder.
 //! Protocol replay isolates context inside the transaction handler on both paths.
@@ -127,8 +128,8 @@ impl MonadExecution {
 
     /// Executes on a native host with reserves and preserved-context lifecycle handling.
     ///
-    /// Ordinary transactions enforce reserves automatically. Preserved synthetic
-    /// calls defer enforcement to their enclosing transaction. Trusted protocol
+    /// Ordinary transactions follow [`MonadEvmExt::revert_on_reserve_balance_violation`].
+    /// Preserved synthetic calls defer enforcement to their enclosing transaction. Trusted protocol
     /// replay isolates the enclosing context and retains zero-gas system receipts.
     pub fn transact<'e, 'a>(
         &self,

@@ -18,7 +18,7 @@ use evm2::{
     registry::{HandlerResult, TxRegistry},
 };
 
-/// Monad transaction executor with automatic reserve enforcement.
+/// Monad transaction executor with reserve rejection enabled by default.
 ///
 /// Dereferences to [`MonadHost`] for state, environment and instruction APIs.
 /// Execute transactions through this wrapper so inspector composition and
@@ -53,7 +53,7 @@ impl<'a> MonadEvm<'a> {
         Self { host, inspector: None, execution }
     }
 
-    /// Executes a transaction with automatic reserves, composing the installed inspector.
+    /// Executes with the configured reserve policy, composing the installed inspector.
     pub fn transact(
         &mut self,
         tx: &Recovered<MonadTxEnvelope>,

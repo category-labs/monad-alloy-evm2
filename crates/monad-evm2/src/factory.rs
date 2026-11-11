@@ -9,9 +9,10 @@ use evm2::{ExecutionConfig, TxResult, Version, evm::DynDatabase, registry::TxReg
 /// Stateless factory for native Monad hosts.
 ///
 /// The caller supplies the runtime version and owns inspectors and state lifecycle.
-/// Ordinary transactions require [`crate::reserve_balance::reserve_inspector`];
-/// trusted protocol replay works directly through the native transaction registry.
-/// Use [`MonadEvmBuilder`] for a standalone executor with automatic observer composition.
+/// Native hosts track reserves without automatically rejecting violations.
+/// Opting into rejection requires [`crate::reserve_balance::reserve_inspector`].
+/// Trusted protocol replay works directly through the native transaction registry.
+/// Use [`MonadEvmBuilder`] for standalone execution with rejection enabled by default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MonadEvmFactory;
 
@@ -46,8 +47,9 @@ impl MonadEvmFactory {
 
     /// Creates a native host without a standalone frame selector or lifecycle wrapper.
     ///
-    /// Compose the application's inspector with [`crate::reserve_balance::reserve_inspector`]
-    /// for each ordinary transaction. A native host follows its configured hardfork;
+    /// When enabling reserve rejection, compose the application's inspector with
+    /// [`crate::reserve_balance::reserve_inspector`] for each ordinary transaction.
+    /// A native host follows its configured hardfork;
     /// `message.ext.hardfork` overrides belong to the standalone executor.
     pub fn create_evm<'a>(
         &self,
@@ -83,7 +85,7 @@ impl MonadEvmBuilder {
         Self { chain_id, limits: MonadLimits::new() }
     }
 
-    /// Creates an EVM with the Monad gas table and limits for `spec`.
+    /// Creates an EVM with the Monad gas table, limits and reserve rejection for `spec`.
     ///
     /// Legacy, access-list, dynamic-fee and set-code transactions pay for their full
     /// gas limit at the effective price. The beneficiary receives the priority fee.
@@ -117,7 +119,7 @@ impl MonadEvmBuilder {
         MonadEvm::new(host, execution)
     }
 
-    /// Creates a native evm2 host and its execution hooks for an embedding application.
+    /// Creates a native host and execution hooks with reserve rejection enabled.
     ///
     /// Keep the pair together. Execute through [`MonadExecution::transact`] with
     /// the application's inspector, or use its documented low-level inspector hook.
@@ -130,7 +132,8 @@ impl MonadEvmBuilder {
     ) -> (MonadHost<'a>, MonadExecution) {
         let config =
             ExecutionConfig::for_spec_and_version(spec, self.limits.version(spec, self.chain_id));
-        let mut ext = MonadEvmExt::default();
+        let mut ext =
+            MonadEvmExt { revert_on_reserve_balance_violation: true, ..Default::default() };
         ext.frame.memory_limit = Some(
             self.limits
                 .memory_limit
