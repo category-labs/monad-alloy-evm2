@@ -2,6 +2,7 @@
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::SolCall;
 use evm2::{
     AccountInfo, Inspector, InspectorConfig, OpcodeSet,
     bytecode::Bytecode,
@@ -11,6 +12,11 @@ use evm2::{
 use monad_evm2::{
     MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHaltReason, MonadHardfork,
     MonadTxEnvelope,
+    reserve_balance::{DIPPED_INTO_RESERVE_SELECTOR, RESERVE_BALANCE_ADDRESS},
+    staking::{
+        STAKING_ADDRESS,
+        interface::IMonadStaking::{getEpochCall, getEpochReturn},
+    },
 };
 
 const SENDER: Address = Address::repeat_byte(0x11);
@@ -190,5 +196,154 @@ fn unobserved_root_halts_still_enforce_reserves() {
         assert!(trace.ended.is_empty());
         assert_eq!(evm.read_account_info(&SENDER).unwrap().unwrap().balance, U256::from(1_000_000));
         assert_eq!(evm.read_account_info(&SENDER).unwrap().unwrap().nonce, 1);
+    }
+}
+
+struct InputEditor {
+    input: Bytes,
+    owned: bool,
+    calls: usize,
+    ends: usize,
+}
+
+impl Inspector<MonadEvmTypes> for InputEditor {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::without_steps()
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        message: &mut Message<MonadEvmTypes>,
+    ) -> Option<MessageResult<MonadEvmTypes>> {
+        if message.depth == 1 {
+            assert_eq!(message.input.as_owned(), None);
+            assert_eq!(message.input.as_bytes(interp.memory()), vec![0xaa; self.input.len()]);
+            if self.owned {
+                message.input = self.input.clone().into();
+            } else {
+                // Reallocate the caller's memory before changing the borrowed input range.
+                interp.memory_mut().resize(0, 4096).unwrap();
+                interp.memory_mut().set(64, &self.input);
+            }
+            self.calls += 1;
+        }
+        None
+    }
+
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
+        if interp.message().depth == 1 {
+            assert_eq!(interp.input(), self.input.as_ref());
+        }
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        message: &Message<MonadEvmTypes>,
+        result: &mut MessageResult<MonadEvmTypes>,
+    ) {
+        if message.depth == 1 {
+            assert!(result.stop.is_success());
+            assert_eq!(message.input.to_bytes(interp.memory()), self.input);
+            self.ends += 1;
+        }
+    }
+}
+
+fn input_forwarder(target: Address) -> Vec<u8> {
+    // Keep input at offset 64 and copy the complete return data to offset zero.
+    let mut code = vec![
+        op::CALLDATASIZE,
+        op::PUSH0,
+        op::PUSH1,
+        64,
+        op::CALLDATACOPY,
+        op::PUSH0,
+        op::PUSH0,
+        op::CALLDATASIZE,
+        op::PUSH1,
+        64,
+        op::PUSH0,
+        op::PUSH20,
+    ];
+    code.extend_from_slice(target.as_slice());
+    code.extend([
+        op::GAS,
+        op::CALL,
+        op::POP,
+        op::RETURNDATASIZE,
+        op::PUSH0,
+        op::PUSH0,
+        op::RETURNDATACOPY,
+        op::RETURNDATASIZE,
+        op::PUSH0,
+        op::RETURN,
+    ]);
+    code
+}
+
+#[test]
+fn edited_caller_memory_and_owned_inputs_reach_monad_handlers() {
+    // Adding the point at infinity to (1, 2) returns (1, 2).
+    let point = [U256::ONE, U256::from(2), U256::ZERO, U256::ZERO]
+        .iter()
+        .flat_map(U256::to_be_bytes::<32>)
+        .collect::<Vec<_>>();
+    let cases = [
+        (CHILD, b"abcd".to_vec(), b"cd\0\0\0\0".to_vec()),
+        (Address::with_last_byte(6), point.clone(), point[..64].to_vec()),
+        (
+            STAKING_ADDRESS,
+            getEpochCall {}.abi_encode(),
+            getEpochCall::abi_encode_returns(&getEpochReturn {
+                epoch: 0,
+                inEpochDelayPeriod: false,
+            }),
+        ),
+        (RESERVE_BALANCE_ADDRESS, DIPPED_INTO_RESERVE_SELECTOR.to_vec(), vec![0; 32]),
+    ];
+    for spec in MonadHardfork::ALL {
+        for (target, input, expected) in &cases {
+            if *target == RESERVE_BALANCE_ADDRESS && spec < MonadHardfork::MonadNine {
+                continue;
+            }
+            for owned in [false, true] {
+                let mut evm = evm(spec, input_forwarder(*target));
+                // Copy a nonzero calldata offset past the input end, requiring zero padding.
+                let child = Bytecode::new_legacy(Bytes::from_static(&[
+                    op::PUSH1,
+                    6,
+                    op::PUSH1,
+                    2,
+                    op::PUSH1,
+                    128,
+                    op::CALLDATACOPY,
+                    op::PUSH1,
+                    6,
+                    op::PUSH1,
+                    128,
+                    op::RETURN,
+                ]));
+                evm.state_mut().account(&CHILD).unwrap().set_code(child.hash_slow(), child);
+                let tx = Recovered::new_unchecked(
+                    MonadTxEnvelope::Legacy(TxLegacy {
+                        to: ROOT.into(),
+                        input: vec![0xaa; input.len()].into(),
+                        gas_limit: 1_000_000,
+                        ..Default::default()
+                    }),
+                    SENDER,
+                );
+                let mut editor =
+                    InputEditor { input: input.clone().into(), owned, calls: 0, ends: 0 };
+                let result = evm.transact_with_inspector(&tx, &mut editor).unwrap().commit();
+                assert!(result.is_success(), "{spec} {target} owned={owned}");
+                assert_eq!(&result.output[..], expected, "{spec} {target} owned={owned}");
+                assert_eq!((editor.calls, editor.ends), (1, 1));
+                assert_eq!(result.tx_gas_used(), 1_000_000);
+                assert!(result.total_gas_spent < result.tx_gas_used());
+            }
+        }
     }
 }

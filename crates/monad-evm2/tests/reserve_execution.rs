@@ -3,7 +3,7 @@
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
-    AccountInfo, ExecutionConfig, ExecutionError, Inspector,
+    AccountInfo, ExecutionError, Inspector,
     bytecode::Bytecode,
     ethereum::LazyTxEip7702,
     evm::InMemoryDB,
@@ -216,7 +216,7 @@ fn reserve_query_gas_input_and_call_context_validation() {
     }
     for (input, value, expected) in [
         (Bytes::new(), U256::ZERO, "method not supported"),
-        (message.input.to_bytes(), U256::ONE, "value is nonzero"),
+        (Bytes::copy_from_slice(evm.message_input(&message)), U256::ONE, "value is nonzero"),
         (
             Bytes::from([DIPPED_INTO_RESERVE_SELECTOR.as_slice(), &[0]].concat()),
             U256::ZERO,
@@ -637,15 +637,7 @@ fn installed_inspectors_and_nonzero_initial_depth_keep_automatic_enforcement() {
     let first = evm.transact(&tx(TARGET, 1, 0)).unwrap().commit();
     assert_eq!(first.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
     assert!(evm.clear_inspector().is_some());
-    let spec = evm.config_spec_id();
-    let mut version = *evm.version();
-    version.initial_call_depth = 7;
-    evm.set_execution_config(
-        ExecutionConfig::for_spec_and_version(spec, version),
-        spec,
-        evm.registry().clone(),
-        monad_evm2::monad_precompiles(spec),
-    );
+    evm.set_initial_call_depth(7);
     let result = evm.transact(&tx(TARGET, 1, 1)).unwrap().commit();
     assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
     let result = evm.transact(&tx(Address::with_last_byte(9), 1, 2)).unwrap().commit();

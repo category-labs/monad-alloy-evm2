@@ -76,8 +76,11 @@ fn copy<const MIP3: bool>(
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub(super) fn calldatacopy<const MIP3: bool>(cx: _, [offset, source, len]: [Word]) -> Result {
     let len = len.to_usize()?;
-    let input = cx.state.message().input.clone();
-    copy::<MIP3>(cx.gas, cx.state, *offset, *source, len, &input)
+    // The input can borrow caller memory; retain only the bytes read before resizing memory.
+    let input = cx.state.input();
+    let start = source.to_usize_saturated().min(input.len());
+    let data = input[start..start.saturating_add(len).min(input.len())].to_vec();
+    copy::<MIP3>(cx.gas, cx.state, *offset, Word::ZERO, len, &data)
 }
 
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]

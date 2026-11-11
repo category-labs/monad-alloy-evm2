@@ -56,38 +56,48 @@ struct Trace {
 impl Inspector<MonadEvmTypes> for Trace {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
         message: &mut Message<MonadEvmTypes>,
     ) -> Option<MessageResult<MonadEvmTypes>> {
-        self.calls.push(message.clone());
+        self.calls.push(record_message(interp, message));
         None
     }
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
         message: &Message<MonadEvmTypes>,
         result: &mut MessageResult<MonadEvmTypes>,
     ) {
-        self.call_ends.push((message.clone(), result.clone()));
+        self.call_ends.push((record_message(interp, message), result.clone()));
     }
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
         message: &mut Message<MonadEvmTypes>,
     ) -> Option<MessageResult<MonadEvmTypes>> {
-        self.creates.push(message.clone());
+        self.creates.push(record_message(interp, message));
         None
     }
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
+        interp: &mut Interpreter<'_, '_, MonadEvmTypes>,
         message: &Message<MonadEvmTypes>,
         result: &mut MessageResult<MonadEvmTypes>,
     ) {
-        self.create_ends.push((message.clone(), result.clone()));
+        self.create_ends.push((record_message(interp, message), result.clone()));
+    }
+}
+
+fn record_message(
+    interp: &Interpreter<'_, '_, MonadEvmTypes>,
+    message: &Message<MonadEvmTypes>,
+) -> Message<MonadEvmTypes> {
+    Message::<MonadEvmTypes> {
+        input: message.input.to_bytes(interp.memory()).into(),
+        ..message.clone()
     }
 }
 

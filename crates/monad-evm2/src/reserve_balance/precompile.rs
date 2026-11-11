@@ -81,7 +81,7 @@ pub fn run_reserve_balance_precompile(
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
-    let input = &message.input;
+    let input = evm.message_input(message);
     if input.get(..4) != Some(&DIPPED_INTO_RESERVE_SELECTOR[..]) {
         return revert_error(gas, ReserveBalanceError::MethodNotSupported);
     }

@@ -86,11 +86,11 @@ fn crypto_moves_retain_execution_identity_and_warmth() {
 }
 
 fn identity(
-    _: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     _: &mut GasTracker,
 ) -> PrecompileResult {
-    Ok(PrecompileOutput::new(message.input.to_bytes()))
+    Ok(PrecompileOutput::new(Bytes::copy_from_slice(evm.message_input(message))))
 }
 
 #[test]

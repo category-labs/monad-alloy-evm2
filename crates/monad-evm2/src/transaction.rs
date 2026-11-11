@@ -269,7 +269,7 @@ fn execute_inner(
         && !host.ext().preserve_reserve_balance_tracker;
     if enforce_reserves {
         host.ext_mut().reserve_execution.checkpoint = Some(host.state().checkpoint());
-        host.ext_mut().reserve_execution.depth = host.version().initial_call_depth;
+        host.ext_mut().reserve_execution.depth = host.initial_call_depth();
     }
     let mut result = execute_initial_frame(host, frame, &mut gas, execution_gas, reservoir)?;
     if enforce_reserves && !host.ext().reserve_execution.observed {

@@ -52,22 +52,23 @@ pub fn run_staking_precompile(
         gas.spend_all();
         return Err(PrecompileError::Revert(Bytes::new()));
     }
+    // Storage access mutably borrows the host that owns the caller's input memory.
+    let input = Bytes::copy_from_slice(evm.message_input(message));
     let mut storage = EvmStakingStorage { evm, error: None };
-    let result = if message
-        .input
+    let result = if input
         .get(..4)
         .and_then(|s| <[u8; 4]>::try_from(s).ok())
         .is_some_and(write::is_write_selector)
     {
         write::run_staking_write(
-            &message.input,
+            &input,
             message.gas_limit,
             &mut storage,
             &message.caller,
             message.value,
         )
     } else {
-        run_staking_with_reader(&message.input, message.gas_limit, &mut storage, message.value)
+        run_staking_with_reader(&input, message.gas_limit, &mut storage, message.value)
     };
     if let Some(error) = storage.error.take() {
         return Err(error);

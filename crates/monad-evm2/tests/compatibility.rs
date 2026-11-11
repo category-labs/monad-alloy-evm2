@@ -189,7 +189,7 @@ fn default_limits_match_release() {
             let base = Version::base(spec.into_eth_spec());
             assert_eq!(version.features, base.features);
             assert_eq!(version.max_blobs_per_tx, base.max_blobs_per_tx);
-            assert_eq!(version.initial_call_depth, base.initial_call_depth);
+            assert_eq!(version.tx_total_gas_cap, base.tx_total_gas_cap);
             assert!(version.feature(EvmFeatures::EIP7623 | EvmFeatures::EIP7702));
             assert!(!version.features.intersects(
                 EvmFeatures::EIP2780

@@ -295,7 +295,6 @@ fn supported_forks_share_the_inherited_engine_rules() {
         assert_eq!(version.features, first.features);
         assert_eq!(version.max_code_size, first.max_code_size);
         assert_eq!(version.max_initcode_size, first.max_initcode_size);
-        assert_eq!(version.max_call_depth(), first.max_call_depth());
         for index in 0..GasId::COUNT {
             let id = GasId::from_usize(index).unwrap();
             assert_eq!(version.gas_params.get(id), first.gas_params.get(id), "{spec}: {id:?}");

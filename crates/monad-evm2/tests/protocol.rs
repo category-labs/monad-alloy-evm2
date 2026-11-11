@@ -257,7 +257,7 @@ impl Inspector<MonadEvmTypes> for Recorder {
         );
         assert!(!interp.host().ext().preserve_reserve_balance_tracker);
         assert!(!interp.host().ext().reserve_balance.tracking_enabled());
-        self.calls.push(message.input.to_bytes());
+        self.calls.push(message.input.to_bytes(interp.memory()));
         None
     }
     fn call_end(

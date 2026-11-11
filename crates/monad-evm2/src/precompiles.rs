@@ -176,7 +176,7 @@ pub fn monad_precompiles(spec: MonadHardfork) -> MonadPrecompiles {
 }
 
 fn ecrecover(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
@@ -184,8 +184,9 @@ fn ecrecover(
 
     // Short inputs are right-padded with zeroes; bytes after the first 128 are ignored.
     let mut input = [0u8; 128];
-    let len = message.input.len().min(input.len());
-    input[..len].copy_from_slice(&message.input[..len]);
+    let data = evm.message_input(message);
+    let len = data.len().min(input.len());
+    input[..len].copy_from_slice(&data[..len]);
 
     // `v` must be a 32-byte big-endian integer equal to 27 or 28.
     if !(input[32..63].iter().all(|&b| b == 0) && matches!(input[63], 27 | 28)) {
@@ -202,36 +203,41 @@ fn ecrecover(
 }
 
 fn ec_add(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    bn254::run_add(&message.input, MONAD_EC_ADD_GAS, gas)
+    bn254::run_add(evm.message_input(message), MONAD_EC_ADD_GAS, gas)
 }
 
 fn ec_mul(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    bn254::run_mul(&message.input, MONAD_EC_MUL_GAS, gas)
+    bn254::run_mul(evm.message_input(message), MONAD_EC_MUL_GAS, gas)
 }
 
 fn ec_pairing(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
-    bn254::run_pair(&message.input, MONAD_EC_PAIRING_PER_POINT_GAS, MONAD_EC_PAIRING_BASE_GAS, gas)
+    bn254::run_pair(
+        evm.message_input(message),
+        MONAD_EC_PAIRING_PER_POINT_GAS,
+        MONAD_EC_PAIRING_BASE_GAS,
+        gas,
+    )
 }
 
 fn blake2f(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
     // Length validation precedes gas charging; final-flag validation follows it.
-    let input = &message.input[..];
+    let input = evm.message_input(message);
     if input.len() != 213 {
         return Err(PrecompileHalt::Blake2WrongLength.into());
     }
@@ -266,13 +272,13 @@ fn blake2f(
 }
 
 fn point_evaluation(
-    _evm: &mut MonadHost<'_>,
+    evm: &mut MonadHost<'_>,
     message: &Message<MonadEvmTypes>,
     gas: &mut GasTracker,
 ) -> PrecompileResult {
     gas.spend(MONAD_POINT_EVALUATION_GAS)?;
 
-    let input = &message.input[..];
+    let input = evm.message_input(message);
     if input.len() != 192 {
         return Err(PrecompileHalt::BlobInvalidInputLength.into());
     }
