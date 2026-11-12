@@ -59,10 +59,7 @@ impl MonadStateSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        MonadBlockEnv, MonadEvmBuilder, MonadHardfork,
-        page::{PageAccess, StoragePageKey},
-    };
+    use crate::{MonadBlockEnv, MonadEvmBuilder, MonadHardfork, page::is_page_cold};
     use alloy_primitives::{Address, U256};
     use evm2::evm::InMemoryDB;
 
@@ -73,17 +70,17 @@ mod tests {
             MonadBlockEnv::default(),
             InMemoryDB::default(),
         );
-        let page = StoragePageKey::from_slot(Address::repeat_byte(0x22), U256::ZERO);
+        let address = Address::repeat_byte(0x22);
         evm.ext_mut().memory_pool_offset = 64;
         let checkpoint = MonadCheckpoint::capture(&mut evm).unwrap();
         evm.ext_mut().memory_pool_offset = 128;
-        PageAccess::load(&mut evm, page).record_read(&mut evm);
+        evm.state_mut().storage_slot(&address, U256::ZERO).unwrap().warm();
         let snapshot = MonadStateSnapshot::capture(&mut evm).unwrap();
         checkpoint.revert(&mut evm);
         assert_eq!(evm.ext().memory_pool_offset(), 64);
-        assert!(PageAccess::load(&mut evm, page).is_cold());
+        assert!(is_page_cold(&mut evm, address, U256::ZERO).unwrap());
         snapshot.restore(&mut evm, InMemoryDB::default());
         assert_eq!(evm.ext().memory_pool_offset(), 128);
-        assert!(!PageAccess::load(&mut evm, page).is_cold());
+        assert!(!is_page_cold(&mut evm, address, U256::ZERO).unwrap());
     }
 }

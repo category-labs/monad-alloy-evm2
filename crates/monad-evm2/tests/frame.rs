@@ -48,11 +48,21 @@ struct Selector {
     grandchild: Option<MonadHardfork>,
     steps: Vec<(u16, MonadHardfork)>,
     ends: Vec<(u16, MonadHardfork, InstrStop)>,
+    read_start: Option<u64>,
+    read_costs: Vec<u64>,
 }
 
 impl Selector {
     const fn new(root: MonadHardfork, child: MonadHardfork) -> Self {
-        Self { root, child, grandchild: None, steps: Vec::new(), ends: Vec::new() }
+        Self {
+            root,
+            child,
+            grandchild: None,
+            steps: Vec::new(),
+            ends: Vec::new(),
+            read_start: None,
+            read_costs: Vec::new(),
+        }
     }
     const fn select(&self, message: &mut Message<MonadEvmTypes>) {
         if message.depth == 1 {
@@ -104,6 +114,14 @@ impl Inspector<MonadEvmTypes> for Selector {
             }
         );
         self.steps.push((depth, actual));
+        if interp.opcode() == op::SLOAD {
+            self.read_start = Some(interp.gas().remaining());
+        }
+    }
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, MonadEvmTypes>) {
+        if let Some(start) = self.read_start.take() {
+            self.read_costs.push(start - interp.gas().remaining());
+        }
     }
     fn call_end(
         &mut self,
@@ -207,27 +225,8 @@ fn compare_with_warmth(
     beneficiary: Address,
     access_list: Vec<AccessListItem>,
 ) -> (TxResult<MonadEvmTypes>, Selector) {
-    let mut actual = evm(root, accounts, None);
-    actual.set_block(MonadBlockEnv { beneficiary, ..Default::default() });
-    let mut selector = Selector::new(root, child);
-    selector.grandchild = grandchild;
-    #[cfg(feature = "compare-monad-revm")]
-    let reference_access_list = access_list.clone();
-    let transaction = if access_list.is_empty() {
-        tx()
-    } else {
-        Recovered::new_unchecked(
-            MonadTxEnvelope::Eip2930(TxEip2930 {
-                chain_id: 1,
-                to: ROOT.into(),
-                gas_limit: GAS,
-                access_list: access_list.into(),
-                ..Default::default()
-            }),
-            SENDER,
-        )
-    };
-    let result = actual.transact_with_inspector(&transaction, &mut selector).unwrap().commit();
+    let (result, selector) =
+        execute_with_warmth(root, child, grandchild, accounts, beneficiary, access_list.clone());
     #[cfg(feature = "compare-monad-revm")]
     {
         let mut db = ReferenceDB::default();
@@ -249,7 +248,7 @@ fn compare_with_warmth(
                     .kind(TxKind::Call(ROOT))
                     .gas_limit(GAS)
                     .gas_price(0)
-                    .access_list(reference_access_list.into())
+                    .access_list(access_list.into())
                     .build_fill(),
             )
             .unwrap();
@@ -263,6 +262,36 @@ fn compare_with_warmth(
             assert_eq!(result.logs, *expected.logs());
         }
     }
+    (result, selector)
+}
+
+fn execute_with_warmth(
+    root: MonadHardfork,
+    child: MonadHardfork,
+    grandchild: Option<MonadHardfork>,
+    accounts: &[(Address, Bytes)],
+    beneficiary: Address,
+    access_list: Vec<AccessListItem>,
+) -> (TxResult<MonadEvmTypes>, Selector) {
+    let mut actual = evm(root, accounts, None);
+    actual.set_block(MonadBlockEnv { beneficiary, ..Default::default() });
+    let mut selector = Selector::new(root, child);
+    selector.grandchild = grandchild;
+    let transaction = if access_list.is_empty() {
+        tx()
+    } else {
+        Recovered::new_unchecked(
+            MonadTxEnvelope::Eip2930(TxEip2930 {
+                chain_id: 1,
+                to: ROOT.into(),
+                gas_limit: GAS,
+                access_list: access_list.into(),
+                ..Default::default()
+            }),
+            SENDER,
+        )
+    };
+    let result = actual.transact_with_inspector(&transaction, &mut selector).unwrap().commit();
     assert_eq!(frame_hardfork(&actual), root);
     assert_eq!(actual.ext().memory_pool_offset(), 0);
     (result, selector)
@@ -337,7 +366,28 @@ fn nested_calls_restore_memory_and_storage_rules_across_all_forks() {
             let accounts = [(ROOT, parent.into()), (CHILD, child.into())];
             for root in MonadHardfork::ALL {
                 for child in MonadHardfork::ALL {
-                    let (_, trace) = compare(root, child, &accounts);
+                    let shared = matches!(opcode, op::CALLCODE | op::DELEGATECALL);
+                    let retained = shared && stop == op::RETURN;
+                    // The reference tracker misses native warmth from pre-MIP-8 frames.
+                    // Assert the protocol gas costs directly for that transition.
+                    let (_, trace) = if retained
+                        && root >= MonadHardfork::MonadTen
+                        && child < MonadHardfork::MonadTen
+                    {
+                        execute_with_warmth(root, child, None, &accounts, Address::ZERO, vec![])
+                    } else {
+                        compare(root, child, &accounts)
+                    };
+                    assert_eq!(
+                        trace.read_costs,
+                        [
+                            8_100,
+                            if child >= MonadHardfork::MonadTen { 100 } else { 8_100 },
+                            if retained { 100 } else { 8_100 },
+                            if retained || root >= MonadHardfork::MonadTen { 100 } else { 8_100 },
+                        ],
+                        "{opcode:#x}, {stop:?}, {root} -> {child}"
+                    );
                     assert!(trace.steps.contains(&(1, child)));
                     assert_eq!(trace.steps.last(), Some(&(0, root)));
                     assert_eq!(trace.ends[0].1, child);

@@ -1,15 +1,17 @@
 //! [MIP-8] storage pages and transaction-local gas accounting.
 //!
-//! A page contains 128 consecutive storage slots. Its access flags and growth
-//! counters live in evm2's transient journal, so frame rollback and transaction
-//! cleanup restore them together with storage. The tracker uses ecRecover's
+//! A page contains 128 consecutive storage slots. A page is warm whenever any
+//! slot in it is warm in evm2's state, including access-list warmth. Write flags
+//! and growth counters live in evm2's transient journal, so frame rollback and
+//! transaction cleanup restore them together with storage. The tracker uses ecRecover's
 //! transient namespace: this permanent precompile never executes contract code
 //! or uses transient storage. Contract TLOAD/TSTORE therefore cannot reach it.
 //!
 //! [MIP-8]: https://mips.monad.xyz/MIPs/MIP-8
 
-use crate::{MonadHardfork, MonadHost, frame_hardfork};
+use crate::MonadHost;
 use alloy_primitives::{Address, U256, keccak256};
+use evm2::DatabaseError;
 
 /// Number of low storage-key bits used as an offset within a page.
 pub const PAGE_SHIFT: usize = 7;
@@ -34,6 +36,20 @@ pub fn page_index(slot: U256) -> U256 {
 #[inline]
 pub fn page_offset(slot: U256) -> U256 {
     slot & U256::from(WORDS_PER_PAGE - 1)
+}
+
+/// Queries native warmth without loading any storage values or maintaining another access flag.
+pub(crate) fn is_page_cold(
+    host: &mut MonadHost<'_>,
+    address: Address,
+    slot: U256,
+) -> Result<bool, DatabaseError> {
+    let storage = host.state_mut().storage(&address)?;
+    if storage.is_warm(&slot) {
+        return Ok(false);
+    }
+    let first = page_index(slot) << PAGE_SHIFT;
+    Ok(!(0..WORDS_PER_PAGE).any(|offset| storage.is_warm(&(first + U256::from(offset)))))
 }
 
 /// Identifies a page in an account's storage, independently of its code address.
@@ -63,7 +79,6 @@ impl StoragePageKey {
 /// One page's bookkeeping, packed into a single journaled transient word.
 pub(crate) struct PageAccess {
     slot: U256,
-    accessed: bool,
     written: bool,
     current_growth: i16,
     peak_growth: i16,
@@ -75,20 +90,10 @@ impl PageAccess {
         let encoded = evm.state_mut().tload(&TRACKER_ADDRESS, &slot).as_limbs()[0];
         Self {
             slot,
-            accessed: encoded & 1 != 0,
             written: encoded & 2 != 0,
             current_growth: (encoded >> 16) as u16 as i16,
             peak_growth: (encoded >> 32) as u16 as i16,
         }
-    }
-
-    pub(crate) const fn is_cold(&self) -> bool {
-        !self.accessed
-    }
-
-    pub(crate) fn record_read(&mut self, evm: &mut MonadHost<'_>) {
-        self.accessed = true;
-        self.store(evm);
     }
 
     pub(crate) fn record_write(
@@ -98,7 +103,6 @@ impl PageAccess {
         new: U256,
     ) -> u64 {
         let mut gas = BASE_COST;
-        self.accessed = true;
         if present != new && !self.written {
             self.written = true;
             gas += PAGE_WRITE_COST;
@@ -114,61 +118,44 @@ impl PageAccess {
     }
 
     fn store(&self, evm: &mut MonadHost<'_>) {
-        let encoded = u64::from(self.accessed)
-            | (u64::from(self.written) << 1)
+        let encoded = (u64::from(self.written) << 1)
             | (u64::from(self.current_growth as u16) << 16)
             | (u64::from(self.peak_growth as u16) << 32);
         evm.state_mut().tstore(&TRACKER_ADDRESS, &self.slot, &U256::from(encoded));
     }
 }
 
-/// Sets the warmth of the page containing `slot` from Monad Ten onward.
-///
-/// Use this after an inspector changes storage warmth outside SLOAD/SSTORE. It
-/// does not load or change the slot, charge gas, or reset the page's write and
-/// growth accounting. Transaction-prewarmed pages stay warm. The change is
-/// journaled and reverts with its frame.
-pub fn set_storage_page_warm(host: &mut MonadHost<'_>, address: Address, slot: U256, warm: bool) {
-    if frame_hardfork(host) < MonadHardfork::MonadTen {
-        return;
-    }
-    let key = StoragePageKey::from_slot(address, slot);
-    let mut page = PageAccess::load(host, key);
-    page.accessed = warm
-        || (0..WORDS_PER_PAGE).any(|offset| {
-            let slot = (key.page << PAGE_SHIFT) + U256::from(offset);
-            host.state().prewarm_set().is_storage_warm(&address, &slot)
-        });
-    page.store(host);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MonadBlockEnv, MonadEvmBuilder, reserve_balance::MonadCheckpoint};
+    use crate::{MonadBlockEnv, MonadEvmBuilder, MonadHardfork, reserve_balance::MonadCheckpoint};
     use evm2::evm::InMemoryDB;
 
     #[test]
-    fn inspector_warmth_is_scoped_to_the_page_and_active_fork() {
+    fn native_warmth_is_scoped_to_the_page_and_storage_account() {
         let address = Address::repeat_byte(0x22);
-        for fork in [MonadHardfork::MonadNine, MonadHardfork::MonadTen] {
+        for prewarmed in [false, true] {
             let mut evm = MonadEvmBuilder::new(1).create_evm(
-                fork,
+                MonadHardfork::MonadTen,
                 MonadBlockEnv::default(),
                 InMemoryDB::default(),
             );
-            set_storage_page_warm(&mut evm, address, U256::ZERO, true);
-            let same = StoragePageKey::from_slot(address, U256::from(127));
-            let next = StoragePageKey::from_slot(address, U256::from(128));
-            let other = StoragePageKey::from_slot(Address::repeat_byte(0x33), U256::ZERO);
-            assert_eq!(PageAccess::load(&mut evm, same).is_cold(), fork < MonadHardfork::MonadTen);
-            assert!(PageAccess::load(&mut evm, next).is_cold());
-            assert!(PageAccess::load(&mut evm, other).is_cold());
+            if prewarmed {
+                evm.state_mut().prewarm_storage_slot(&address, U256::ZERO);
+            } else {
+                evm.state_mut().storage_slot(&address, U256::ZERO).unwrap().warm();
+            }
+            assert!(!is_page_cold(&mut evm, address, U256::from(127)).unwrap());
+            assert!(is_page_cold(&mut evm, address, U256::from(128)).unwrap());
+            assert!(is_page_cold(&mut evm, Address::repeat_byte(0x33), U256::ZERO).unwrap());
+            // Page queries consult warmth only, including when a nested host has no tracker.
+            assert!(!evm.state_mut().storage(&address).unwrap().is_loaded(&U256::from(127)));
+            assert!(!evm.state_mut().storage(&address).unwrap().is_loaded(&U256::from(128)));
         }
     }
 
     #[test]
-    fn inspector_warmth_preserves_write_charges_and_reverts_with_the_frame() {
+    fn native_warmth_and_write_growth_revert_with_the_frame() {
         let address = Address::repeat_byte(0x22);
         let mut evm = MonadEvmBuilder::new(1).create_evm(
             MonadHardfork::MonadTen,
@@ -177,19 +164,20 @@ mod tests {
         );
         let key = StoragePageKey::from_slot(address, U256::ZERO);
         let cold = MonadCheckpoint::capture(&mut evm).unwrap();
-        set_storage_page_warm(&mut evm, address, U256::ZERO, true);
+        evm.state_mut().storage_slot(&address, U256::ZERO).unwrap().warm();
         assert_eq!(
             PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ZERO, U256::ONE),
             BASE_COST + PAGE_WRITE_COST + STATE_GROWTH_COST
         );
         let warm = MonadCheckpoint::capture(&mut evm).unwrap();
-        set_storage_page_warm(&mut evm, address, U256::from(127), false);
-        assert!(PageAccess::load(&mut evm, key).is_cold());
+        evm.state_mut().storage_slot(&address, U256::from(128)).unwrap().warm();
+        assert!(!is_page_cold(&mut evm, address, U256::from(128)).unwrap());
         warm.revert(&mut evm);
-        assert!(!PageAccess::load(&mut evm, key).is_cold());
+        assert!(is_page_cold(&mut evm, address, U256::from(128)).unwrap());
+        assert!(!is_page_cold(&mut evm, address, U256::ZERO).unwrap());
 
-        set_storage_page_warm(&mut evm, address, U256::ZERO, false);
-        set_storage_page_warm(&mut evm, address, U256::ZERO, true);
+        evm.state_mut().set_storage_warm(&address, U256::ZERO, false);
+        evm.state_mut().set_storage_warm(&address, U256::ZERO, true);
         assert_eq!(
             PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ONE, U256::ZERO),
             BASE_COST
@@ -199,7 +187,7 @@ mod tests {
             BASE_COST
         );
         cold.revert(&mut evm);
-        assert!(PageAccess::load(&mut evm, key).is_cold());
+        assert!(is_page_cold(&mut evm, address, U256::ZERO).unwrap());
         assert_eq!(
             PageAccess::load(&mut evm, key).record_write(&mut evm, U256::ZERO, U256::ONE),
             BASE_COST + PAGE_WRITE_COST + STATE_GROWTH_COST
@@ -207,20 +195,23 @@ mod tests {
     }
 
     #[test]
-    fn cooling_preserves_transaction_prewarmed_pages() {
+    fn cooling_preserves_other_warm_slots_and_access_list_warmth() {
         let address = Address::repeat_byte(0x22);
         let mut evm = MonadEvmBuilder::new(1).create_evm(
             MonadHardfork::MonadTen,
             MonadBlockEnv::default(),
             InMemoryDB::default(),
         );
+        for slot in [0, 127] {
+            evm.state_mut().storage_slot(&address, U256::from(slot)).unwrap().warm();
+        }
+        evm.state_mut().set_storage_warm(&address, U256::ZERO, false);
+        assert!(!is_page_cold(&mut evm, address, U256::ZERO).unwrap());
+        evm.state_mut().set_storage_warm(&address, U256::from(127), false);
+        assert!(is_page_cold(&mut evm, address, U256::ZERO).unwrap());
         evm.state_mut().prewarm_storage_slot(&address, U256::from(127));
-        set_storage_page_warm(&mut evm, address, U256::ZERO, false);
-        let page = StoragePageKey::from_slot(address, U256::ZERO);
-        assert!(!PageAccess::load(&mut evm, page).is_cold());
-        let next = StoragePageKey::from_slot(address, U256::from(128));
-        set_storage_page_warm(&mut evm, address, U256::from(128), true);
-        set_storage_page_warm(&mut evm, address, U256::from(128), false);
-        assert!(PageAccess::load(&mut evm, next).is_cold());
+        evm.state_mut().set_storage_warm(&address, U256::from(127), false);
+        assert!(!is_page_cold(&mut evm, address, U256::ZERO).unwrap());
+        assert!(is_page_cold(&mut evm, address, U256::from(128)).unwrap());
     }
 }

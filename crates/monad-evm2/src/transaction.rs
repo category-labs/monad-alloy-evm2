@@ -6,7 +6,6 @@
 
 use crate::{
     MonadEvmTypes, MonadHaltReason, MonadHardfork, MonadHost, MonadTxEnvelope, MonadTxResultExt,
-    page::{PageAccess, StoragePageKey},
     reserve_balance::{begin_reserve_balance_tx, end_reserve_balance_tx, sync_reserve_balance},
 };
 use alloy_consensus::{Transaction, TxType, Typed2718};
@@ -152,14 +151,6 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     }
     if let Some(access_list) = tx.access_list() {
         warm_access_list(host, access_list);
-        if host.config_spec_id() >= MonadHardfork::MonadTen {
-            for item in &access_list.0 {
-                for slot in &item.storage_keys {
-                    let key = StoragePageKey::from_slot(item.address, U256::from_be_bytes(slot.0));
-                    PageAccess::load(host, key).record_read(host);
-                }
-            }
-        }
     }
     host.ext_mut().frame.base_warm = Some(host.state().prewarm_set().clone());
     host.warm_precompiles();
