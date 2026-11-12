@@ -182,13 +182,20 @@ impl<const BASE_SPEC_ID: u32, const MONAD_SPEC_ID: u32> EvmConfig<MonadEvmTypes>
     for MonadEvmConfig<BASE_SPEC_ID, MONAD_SPEC_ID>
 {
     const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid base spec ID");
-    const OPCODE_CONFIG: &'static OpcodeConfig<MonadEvmTypes> = &{
-        let mut config = OpcodeConfig::base::<Self>();
-        if MONAD_SPEC_ID <= u8::MAX as u32
-            && MonadHardfork::try_from_u8(MONAD_SPEC_ID as u8).is_some()
-        {
-            instructions::configure(&mut config);
-        }
-        config
-    };
+    const OPCODE_CONFIG: &'static OpcodeConfig<MonadEvmTypes> =
+        &monad_opcode_config::<BASE_SPEC_ID, MONAD_SPEC_ID>();
+}
+
+/// Returns Monad's instruction table over an inherited Ethereum specification.
+///
+/// The const parameters follow [`MonadEvmConfig`]. Embedders that add their own
+/// instructions extend this table in their own [`EvmConfig`].
+pub const fn monad_opcode_config<const BASE_SPEC_ID: u32, const MONAD_SPEC_ID: u32>()
+-> OpcodeConfig<MonadEvmTypes> {
+    let mut config = OpcodeConfig::base::<MonadEvmConfig<BASE_SPEC_ID, MONAD_SPEC_ID>>();
+    if MONAD_SPEC_ID <= u8::MAX as u32 && MonadHardfork::try_from_u8(MONAD_SPEC_ID as u8).is_some()
+    {
+        instructions::configure(&mut config);
+    }
+    config
 }

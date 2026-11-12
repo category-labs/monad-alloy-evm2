@@ -21,7 +21,7 @@ pub use chain::{MonadChainContext, default_max_reserve_balance};
 mod evm;
 pub use evm::{
     MonadBlockEnv, MonadEvmConfig, MonadEvmExt, MonadEvmTypes, MonadHaltReason, MonadHost,
-    MonadMessageExt, MonadMessageResultExt, MonadTxEnvelope, MonadTxResultExt,
+    MonadMessageExt, MonadMessageResultExt, MonadTxEnvelope, MonadTxResultExt, monad_opcode_config,
 };
 
 mod executor;
