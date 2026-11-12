@@ -50,6 +50,9 @@ fn run(args: Args) -> Result<u8> {
                 )?;
             }
             writeln!(output)?;
+            if let Some(divergence) = case.known_spec_model_divergence {
+                writeln!(output, "  KNOWN SPEC-MODEL DIVERGENCE: {}", divergence.description())?;
+            }
             for difference in &case.parity.differences {
                 writeln!(
                     output,
@@ -67,6 +70,13 @@ fn run(args: Args) -> Result<u8> {
             report.summary.unsupported,
             report.summary.total
         )?;
+        if report.summary.known_spec_model_divergences > 0 {
+            writeln!(
+                output,
+                "Known spec-model divergences: {} (included in failed cases)",
+                report.summary.known_spec_model_divergences
+            )?;
+        }
         if cfg!(feature = "compare-monad-revm") {
             writeln!(
                 output,

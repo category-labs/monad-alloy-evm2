@@ -517,7 +517,31 @@ fn reports_high_fee_spec_divergence_as_a_failure() {
         assert_eq!(report.cases[0].status, Status::Failed, "{network}: {report:?}");
         assert!(report.cases[0].message.contains("receipts root mismatch"), "{report:?}");
         assert!(report.cases[0].message.contains("reserve_balance_violation"), "{report:?}");
+        assert_eq!(report.cases[0].known_spec_model_divergence, None);
+        assert_eq!(report.summary.known_spec_model_divergences, 0);
+        assert_eq!(report.exit_code(false), 1);
     }
+}
+
+#[test]
+fn a_high_gas_usage_name_alone_does_not_classify_a_failure() {
+    let dir = tempdir().unwrap();
+    let fixtures = dir.path().join("valid_blocks");
+    fs::create_dir(&fixtures).unwrap();
+    let path = fixtures.join("highGasUsage.json");
+    let case = reserve_fixture(
+        "MONAD_EIGHT",
+        100_000_000_000_000_000_000,
+        204_000_000_000_000,
+        &[&[true], &[true]],
+    );
+    write_cases(&path, json!({"./updated_2/highGasUsage.json::highGasUsage_MONAD_EIGHT": case}));
+    let report = run(&[path], None).unwrap();
+    assert_eq!(report.cases[0].status, Status::Failed);
+    assert_eq!(report.cases[0].known_spec_model_divergence, None);
+    assert_eq!(report.summary.failed, 1);
+    assert_eq!(report.summary.known_spec_model_divergences, 0);
+    assert_eq!(report.exit_code(true), 1);
 }
 
 #[test]
@@ -680,7 +704,7 @@ fn discovers_deduplicates_filters_and_continues_after_bad_files() {
     let report = run(&[dir.path().to_owned(), fixture_file], None).unwrap();
     assert_eq!(
         serde_json::to_value(&report.summary).unwrap(),
-        json!({"total": 3, "passed": 1, "failed": 1, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))})
+        json!({"total": 3, "passed": 1, "failed": 1, "known_spec_model_divergences": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))})
     );
     assert_eq!(report.cases[0].name, "<file>");
     assert_eq!(report.cases[1].name, "pass");
@@ -712,11 +736,11 @@ fn cli_json_schema_and_exit_codes() {
         assert_eq!(
             actual,
             json!({
-                "schema_version": 1, "verification": if cfg!(feature = "compare-monad-revm") { "valid_block_execution_and_reference_parity" } else { "valid_block_execution" },
-                "summary": {"total": 2, "passed": 1, "failed": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))},
+                "schema_version": 2, "verification": if cfg!(feature = "compare-monad-revm") { "valid_block_execution_and_reference_parity" } else { "valid_block_execution" },
+                "summary": {"total": 2, "passed": 1, "failed": 0, "known_spec_model_divergences": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))},
                 "cases": [
-                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "parity": {"checks": usize::from(cfg!(feature = "compare-monad-revm")), "corrected_receipts": usize::from(cfg!(feature = "compare-monad-revm")), "differences": []}},
-                    {"file": file.canonicalize().unwrap(), "name": "unsupported", "network": "MONAD_EIGHT", "status": "unsupported", "message": "invalid-block expectations require consensus validation and exact error matching", "parity": {"checks": 0, "corrected_receipts": 0, "differences": []}},
+                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "known_spec_model_divergence": null, "parity": {"checks": usize::from(cfg!(feature = "compare-monad-revm")), "corrected_receipts": usize::from(cfg!(feature = "compare-monad-revm")), "differences": []}},
+                    {"file": file.canonicalize().unwrap(), "name": "unsupported", "network": "MONAD_EIGHT", "status": "unsupported", "message": "invalid-block expectations require consensus validation and exact error matching", "known_spec_model_divergence": null, "parity": {"checks": 0, "corrected_receipts": 0, "differences": []}},
                 ],
             })
         );

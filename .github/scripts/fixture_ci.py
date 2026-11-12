@@ -1,4 +1,4 @@
-"""Check the pinned fixture corpus and optional, documented reference differences."""
+"""Check the pinned corpus, known spec-model divergences and optional reference differences."""
 
 import argparse
 import hashlib
@@ -39,7 +39,7 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
     )
     if (
         not isinstance(report, dict)
-        or report.get("schema_version") != 1
+        or report.get("schema_version") != 2
         or report.get("verification") != verification
     ):
         raise ValueError("unsupported fixture report schema or verification scope")
@@ -48,7 +48,7 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
         raise ValueError("missing fixture cases")
     root = root.resolve()
     expected_cases = inventory(root)
-    failures = {identity(case): case for case in expected["fixture_failures"]}
+    divergences = {identity(case): case for case in expected["spec_model_divergences"]}
     differences = {identity(case): case for case in expected["reserve_differences"]}
     seen = set()
     totals = dict.fromkeys(expected["summary"], 0)
@@ -61,12 +61,21 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
         if key in seen or key not in expected_cases:
             raise ValueError(f"duplicate or unexpected fixture result: {key}")
         seen.add(key)
-        known_failure = failures.get(key)
-        if known_failure:
-            if case["status"] != "failed" or case["message"] != known_failure["message"]:
-                raise ValueError(f"known fixture failure changed: {key}")
+        if "known_spec_model_divergence" not in case:
+            raise ValueError(f"missing spec-model classification: {key}")
+        classification = case["known_spec_model_divergence"]
+        known_divergence = divergences.get(key)
+        if known_divergence:
+            if (
+                case["status"] != "failed"
+                or case["message"] != known_divergence["message"]
+                or classification != known_divergence["known_spec_model_divergence"]
+            ):
+                raise ValueError(f"known spec-model divergence changed: {key}")
         elif case["status"] != "passed":
             raise ValueError(f"unexpected fixture outcome: {key}: {case['message']}")
+        elif classification is not None:
+            raise ValueError(f"unexpected spec-model classification: {key}")
 
         parity = case["parity"]
         observed = parity["differences"]
@@ -101,12 +110,13 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
             raise ValueError(f"unexpected reference difference: {key}")
         totals["total"] += 1
         totals[case["status"]] += 1
+        totals["known_spec_model_divergences"] += int(classification is not None)
         totals["parity_checks"] += checks
         totals["parity_differences"] += len(observed)
         totals["corrected_reference_receipts"] += corrections
     if seen != expected_cases or not seen:
         raise ValueError("fixture results are incomplete or empty")
-    if not failures.keys() <= seen or not differences.keys() <= seen:
+    if not divergences.keys() <= seen or not differences.keys() <= seen:
         raise ValueError("known fixture identities are missing")
     expected_summary = expected["summary"].copy()
     if not compare_monad_revm:
@@ -151,8 +161,10 @@ def main(argv=None):
     else:
         summary = report["summary"]
         message = (
-            f"Fixture gate passed: {summary['passed']} passes, {summary['failed']} known fixture mismatch, "
-            f"{summary['unsupported']} unsupported."
+            f"Fixture gate passed: {summary['passed']} passes; "
+            f"known spec-model divergences: {summary['known_spec_model_divergences']}, "
+            f"unexpected failures: {summary['failed'] - summary['known_spec_model_divergences']}, "
+            f"unsupported: {summary['unsupported']}."
         )
         if args.compare_monad_revm:
             message += (

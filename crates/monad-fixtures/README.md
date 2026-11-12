@@ -47,6 +47,15 @@ are zero when the feature is disabled. The reference's receipt gas is normalized
 to Monad's full-limit charge; consumed gas and fee effects remain checked separately.
 Automatic reserve rejection differs from monad-revm 0.8.0 and remains visible in the parity report.
 
+`known_spec_model_divergence` labels only the exact `highGasUsage` failure as
+`gas_fees_exceed_reserve`. Its second transaction charges 10.2 MON against a
+10 MON reserve and cannot use the emptying exception. The
+[OCaml model](https://github.com/category-labs/monad-execution-specs/blob/12e2c05bcfa6daeef9c0f4c54c5c7a13fde39e89/lib/reserve_balance.ml#L59-L64)
+documents why it permits this consensus-excluded input; the runtime follows the
+execution client's reserve rejection. This label is `null` for other outcomes.
+`summary.known_spec_model_divergences` counts these cases within `failed`;
+the original diagnostic and exit code `1` remain unchanged.
+
 Unsupported formats and rules are reported explicitly. Verification covers
 valid-block execution, not every consensus header rule or staking lifecycle.
 MonadTen and MonadNext are covered by focused runtime tests.
@@ -88,8 +97,9 @@ mode; normal CI runs independently.
 
 The [acceptance policy](../../.github/scripts/fixture_ci.py) checks the complete
 corpus against [recorded expectations](../../.github/scripts/fixture_expectations.json),
-including the known `highGasUsage` fixture mismatch and, when enabled, exact
-reserve-enforcement differences. Raw failures and differences remain in the JSON
-report.
+including the exact `highGasUsage` spec-model classification and diagnostic and,
+when enabled, exact reserve-enforcement differences. CI reports known spec-model
+divergences separately from unexpected failures and rejects any changed outcome.
+Raw failures and differences remain in the JSON report.
 
 Licensed under [MIT](../../LICENSE).

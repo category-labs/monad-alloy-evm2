@@ -5,16 +5,18 @@
     "total": 227,
     "passed": 226,
     "failed": 1,
+    "known_spec_model_divergences": 1,
     "unsupported": 0,
     "parity_checks": 2155,
     "parity_differences": 301,
     "corrected_reference_receipts": 702
   },
-  "fixture_failures": [
+  "spec_model_divergences": [
     {
       "file": "valid_blocks/highGasUsage.json",
       "name": "./updated_2/highGasUsage.json::highGasUsage_MONAD_EIGHT",
       "network": "MONAD_EIGHT",
+      "known_spec_model_divergence": "gas_fees_exceed_reserve",
       "message": "block 1: receipts root mismatch: expected 0x0ea87bd79fe41df810ea2d14ab13c6a3095c5ac9f181a747d9eccca4df09a392, got 0x71ddce3aeced8691b6b4a222fdf0249f8016197a484b54fc5915793fda7b67eb; transactions [0: reserve_balance_violation]"
     }
   ],

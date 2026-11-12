@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use walkdir::WalkDir;
 
+mod divergence;
+pub use divergence::KnownSpecModelDivergence;
+
 mod engine;
 mod execute;
 mod fixture;
@@ -41,6 +44,8 @@ pub struct CaseReport {
     pub status: Status,
     /// Checked block/transaction counts or a specific failure/unsupported reason.
     pub message: String,
+    /// Exact known spec-model difference, without changing the failed status or diagnostic.
+    pub known_spec_model_divergence: Option<KnownSpecModelDivergence>,
     /// Optional comparisons against monad-revm 0.8.0, separate from fixture assertions.
     pub parity: ParityReport,
 }
@@ -54,6 +59,8 @@ pub struct Summary {
     pub passed: usize,
     /// Cases or files that failed.
     pub failed: usize,
+    /// Failed cases classified as known spec-model divergences; included in `failed`.
+    pub known_spec_model_divergences: usize,
     /// Cases that could not be checked.
     pub unsupported: usize,
     /// Number of operations compared with the reference.
@@ -139,6 +146,7 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
                     network: None,
                     status: Status::Failed,
                     message: format!("cannot read fixture object: {error:#}"),
+                    known_spec_model_divergence: None,
                     parity: ParityReport::default(),
                 });
                 continue;
@@ -164,12 +172,24 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
                 Err(fixture::FixtureError::Unsupported(reason)) => (Status::Unsupported, reason),
                 Err(fixture::FixtureError::Failed(error)) => (Status::Failed, format!("{error:#}")),
             };
-            cases.push(CaseReport { file: file.clone(), name, network, status, message, parity });
+            let mut case = CaseReport {
+                file: file.clone(),
+                name,
+                network,
+                status,
+                message,
+                known_spec_model_divergence: None,
+                parity,
+            };
+            case.known_spec_model_divergence = KnownSpecModelDivergence::classify(&case);
+            cases.push(case);
         }
     }
 
     let mut summary = Summary { total: cases.len(), ..Default::default() };
     for case in &cases {
+        summary.known_spec_model_divergences +=
+            usize::from(case.known_spec_model_divergence.is_some());
         summary.parity_checks += case.parity.checks;
         summary.parity_differences += case.parity.differences.len();
         summary.corrected_reference_receipts += case.parity.corrected_receipts;
@@ -180,7 +200,7 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
         }
     }
     Ok(Report {
-        schema_version: 1,
+        schema_version: 2,
         verification: if cfg!(feature = "compare-monad-revm") {
             "valid_block_execution_and_reference_parity"
         } else {
