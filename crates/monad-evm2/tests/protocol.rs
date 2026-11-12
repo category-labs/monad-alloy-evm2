@@ -643,3 +643,47 @@ fn native_replay_works_and_standalone_checks_its_transaction_handler() {
     evm.set_execution_config(config, spec, original, monad_evm2::monad_precompiles(spec));
     assert_zero_gas(&evm.transact(&tx).unwrap().commit());
 }
+
+#[test]
+fn protocol_errors_explain_invalid_envelopes() {
+    let cases = [
+        (Error::NotLegacy { tx_type: 2 }, "expected a legacy envelope, got type 2"),
+        (
+            Error::InvalidTarget(TxKind::Create),
+            "expected a call to the staking contract, got contract creation",
+        ),
+        (Error::NonZeroGasLimit(100_000), "gas limit must be zero, got 100000"),
+        (Error::NonZeroGasPrice(1), "gas price must be zero, got 1"),
+        (Error::MissingSelector, "missing four-byte syscall selector"),
+        (Error::UnknownSelector([0xde, 0xad, 0xbe, 0xef]), "unknown syscall selector 0xdeadbeef"),
+        (
+            Error::InvalidCalldataLength { selector: [0; 4], expected: 36, got: 4 },
+            "syscall 0x00000000 requires 36 calldata bytes, got 4",
+        ),
+        (
+            Error::NonCanonicalCalldata { selector: [0; 4] },
+            "noncanonical ABI calldata for syscall 0x00000000",
+        ),
+        (Error::NonZeroValue { selector: [0; 4] }, "value must be zero for syscall 0x00000000"),
+        (Error::ChainIdMismatch { expected: 143, got: 1 }, "expected chain ID 143, got 1"),
+        (Error::NonceMismatch { expected: 2, got: 1 }, "expected sender nonce 2, got 1"),
+        (Error::NonceOverflow, "sender nonce cannot be incremented"),
+        (Error::BalanceOverflow, "reward would overflow the staking balance"),
+        (
+            Error::ExecutionFailed {
+                stop: InstrStop::Revert,
+                output: Bytes::from_static(&[0xde, 0xad]),
+            },
+            "syscall execution failed (Revert), output 0xdead",
+        ),
+    ];
+    for (error, message) in cases {
+        assert_eq!(error.to_string(), format!("invalid Monad protocol transaction: {message}"));
+    }
+    assert_eq!(
+        Error::InvalidTarget(USER.into()).to_string(),
+        format!(
+            "invalid Monad protocol transaction: expected staking destination {STAKING_ADDRESS}, got {USER}"
+        )
+    );
+}

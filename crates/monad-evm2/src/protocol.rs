@@ -22,7 +22,7 @@ use crate::{
     syscall_snapshot_calldata,
 };
 use alloy_consensus::{Typed2718, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, FixedBytes, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::{fmt, mem, sync::atomic::Ordering};
 use evm2::{
@@ -212,7 +212,46 @@ pub enum ProtocolSystemCallError {
 
 impl fmt::Display for ProtocolSystemCallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid Monad protocol transaction: {self:?}")
+        f.write_str("invalid Monad protocol transaction: ")?;
+        match self {
+            Self::NotLegacy { tx_type } => {
+                write!(f, "expected a legacy envelope, got type {tx_type}")
+            }
+            Self::InvalidTarget(TxKind::Create) => {
+                f.write_str("expected a call to the staking contract, got contract creation")
+            }
+            Self::InvalidTarget(TxKind::Call(address)) => {
+                write!(f, "expected staking destination {STAKING_ADDRESS}, got {address}")
+            }
+            Self::NonZeroGasLimit(gas) => write!(f, "gas limit must be zero, got {gas}"),
+            Self::NonZeroGasPrice(price) => write!(f, "gas price must be zero, got {price}"),
+            Self::MissingSelector => f.write_str("missing four-byte syscall selector"),
+            Self::UnknownSelector(selector) => {
+                write!(f, "unknown syscall selector {}", FixedBytes(*selector))
+            }
+            Self::InvalidCalldataLength { selector, expected, got } => write!(
+                f,
+                "syscall {} requires {expected} calldata bytes, got {got}",
+                FixedBytes(*selector)
+            ),
+            Self::NonCanonicalCalldata { selector } => {
+                write!(f, "noncanonical ABI calldata for syscall {}", FixedBytes(*selector))
+            }
+            Self::NonZeroValue { selector } => {
+                write!(f, "value must be zero for syscall {}", FixedBytes(*selector))
+            }
+            Self::ChainIdMismatch { expected, got } => {
+                write!(f, "expected chain ID {expected}, got {got}")
+            }
+            Self::NonceMismatch { expected, got } => {
+                write!(f, "expected sender nonce {expected}, got {got}")
+            }
+            Self::NonceOverflow => f.write_str("sender nonce cannot be incremented"),
+            Self::BalanceOverflow => f.write_str("reward would overflow the staking balance"),
+            Self::ExecutionFailed { stop, output } => {
+                write!(f, "syscall execution failed ({stop:?}), output {output}")
+            }
+        }
     }
 }
 
