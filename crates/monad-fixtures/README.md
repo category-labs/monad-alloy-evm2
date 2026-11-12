@@ -44,9 +44,8 @@ cargo run --locked -p monad-evm2-fixtures --features compare-monad-revm -- /path
 Fixture `status` and optional reference `parity` are reported separately.
 The JSON `verification` field identifies the active mode; comparison counters
 are zero when the feature is disabled. The reference's receipt gas is normalized
-to Monad's full-limit charge; consumed gas and fee
-effects remain checked separately. Automatic reserve rejection differs from
-monad-revm 0.8.0 and remains visible in the parity report.
+to Monad's full-limit charge; consumed gas and fee effects remain checked separately.
+Automatic reserve rejection differs from monad-revm 0.8.0 and remains visible in the parity report.
 
 Unsupported formats and rules are reported explicitly. Verification covers
 valid-block execution, not every consensus header rule or staking lifecycle.
@@ -75,17 +74,22 @@ To reproduce CI, use the
 With that checkout at `../monad-execution-specs`:
 
 ```sh
-cargo build --locked -p monad-evm2-fixtures --features compare-monad-revm
+cargo build --locked -p monad-evm2-fixtures
 python3 .github/scripts/fixture_ci.py \
   --runner target/debug/monad-evm2-fixtures \
   --fixtures ../monad-execution-specs/test/execution/fixtures/blockchain_tests \
-  --report target/fixture-report.json \
-  --compare-monad-revm
+  --report target/fixture-report.json
 ```
+
+To audit the reference engine, build with `--features compare-monad-revm` and add
+`--compare-monad-revm` to the acceptance command. The manual
+[Reference comparisons workflow](../../.github/workflows/reference.yml) runs this
+mode; normal CI runs independently.
 
 The [acceptance policy](../../.github/scripts/fixture_ci.py) checks the complete
 corpus against [recorded expectations](../../.github/scripts/fixture_expectations.json),
-including the known `highGasUsage` fixture mismatch and reserve-enforcement
-differences. Raw failures and differences remain in the JSON report.
+including the known `highGasUsage` fixture mismatch and, when enabled, exact
+reserve-enforcement differences. Raw failures and differences remain in the JSON
+report.
 
 Licensed under [MIT](../../LICENSE).

@@ -152,10 +152,14 @@ def main(argv=None):
         summary = report["summary"]
         message = (
             f"Fixture gate passed: {summary['passed']} passes, {summary['failed']} known fixture mismatch, "
-            f"{summary['unsupported']} unsupported; {summary['parity_checks']} engine comparisons, "
-            f"{summary['parity_differences']} exact reserve-enforcement differences; "
-            f"{summary['corrected_reference_receipts']} reference receipts normalized."
+            f"{summary['unsupported']} unsupported."
         )
+        if args.compare_monad_revm:
+            message += (
+                f" {summary['parity_checks']} engine comparisons, "
+                f"{summary['parity_differences']} exact reserve-enforcement differences; "
+                f"{summary['corrected_reference_receipts']} reference receipts normalized."
+            )
         exit_code = 0
     print(message, file=sys.stderr if exit_code else sys.stdout)
     if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):

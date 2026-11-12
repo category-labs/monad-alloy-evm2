@@ -29,21 +29,29 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Lint all features
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Check independent test dependencies
+        run: |
+          cargo tree --locked --workspace --edges normal,build,dev --prefix none \
+            --features monad-evm2/serde,monad-evm2/memory_limit > "${RUNNER_TEMP}/dependencies.txt"
+          if grep -E '^(monad-revm|revm) v' "${RUNNER_TEMP}/dependencies.txt"; then
+            echo "::error::Default protocol tests must not depend on a reference engine"
+            exit 1
+          fi
+      - name: Lint runtime features
+        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit -- -D warnings
       - name: Test default features
         run: cargo test --locked -p monad-evm2
-      - name: Test all features
-        run: cargo test --locked -p monad-evm2 --all-features
+      - name: Test serialization and compatibility features
+        run: cargo test --locked -p monad-evm2 --features serde,memory_limit
       - name: Test without default features
         run: cargo test --locked -p monad-evm2 --no-default-features --features std,serde
       - name: Check documentation
-        run: cargo doc --locked --workspace --no-deps --all-features
+        run: cargo doc --locked --workspace --no-deps --features monad-evm2/serde,monad-evm2/memory_limit
         env:
           RUSTDOCFLAGS: -D warnings
 
   fixtures:
-    name: Replay Monad fixtures and check parity
+    name: Replay Monad execution fixtures
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -64,18 +72,16 @@ jobs:
       - name: Test fixture runner and acceptance policy
         run: |
           cargo test --locked -p monad-evm2-fixtures
-          cargo test --locked -p monad-evm2-fixtures --features compare-monad-revm
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: Build fixture runner
-        run: cargo build --locked -p monad-evm2-fixtures --features compare-monad-revm
+        run: cargo build --locked -p monad-evm2-fixtures
       - name: Replay corpus and check exact outcomes
         run: >-
           python3 .github/scripts/fixture_ci.py
           --runner target/debug/monad-evm2-fixtures
           --fixtures .fixture-spec/test/execution/fixtures/blockchain_tests
           --report fixture-results/report.json
-          --compare-monad-revm
-      - name: Upload raw fixture and parity report
+      - name: Upload raw fixture report
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

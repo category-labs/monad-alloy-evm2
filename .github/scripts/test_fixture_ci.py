@@ -175,12 +175,13 @@ class FixtureGateTests(unittest.TestCase):
         self.file.rename(fixtures / "cases.json")
         for case in self.report["cases"]:
             case["file"] = str(fixtures / "cases.json")
-        for passes in (True, False):
-            report = copy.deepcopy(self.report)
+        for compare, passes in [(True, True), (True, False), (False, True), (False, False)]:
+            report = copy.deepcopy(self.report) if compare else self.independent_report()
             if not passes:
                 report["cases"][1]["message"] = "unexpected"
             output = self.root / "output" / "report.json"
             summary = self.root / "summary.md"
+            summary.unlink(missing_ok=True)
 
             def run(command, stdout, check):
                 stdout.write(json.dumps(report).encode())
@@ -194,10 +195,14 @@ class FixtureGateTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                code = fixture_ci.main(["--runner", "runner", "--fixtures", str(fixtures), "--report", str(output), "--compare-monad-revm"])
+                arguments = ["--runner", "runner", "--fixtures", str(fixtures), "--report", str(output)]
+                if compare:
+                    arguments.append("--compare-monad-revm")
+                code = fixture_ci.main(arguments)
             self.assertEqual(code, 0 if passes else 1)
             self.assertEqual(json.loads(output.read_text()), report)
             self.assertIn("Fixture gate passed" if passes else "Fixture gate failed", summary.read_text())
+            self.assertEqual("engine comparisons" in summary.read_text(), compare and passes)
 
 
 if __name__ == "__main__":

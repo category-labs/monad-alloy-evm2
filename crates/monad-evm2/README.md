@@ -91,6 +91,7 @@ simplified public-key identifiers.
 | `blst` | BLST backend. | Yes |
 | `portable` | Portable KZG and BLST builds. | Yes |
 | `memory_limit` | Compatibility flag; memory limits always apply. | No |
+| `compare-monad-revm` | Development tests against monad-revm 0.8.0. | No |
 
 Memory is shared by active frames and capped at 8 MiB from MonadNine onward.
 Disable default features for `no_std` builds.
@@ -101,12 +102,26 @@ Run from the workspace root. [rust-toolchain.toml](../../rust-toolchain.toml)
 selects Rust 1.96.0 with rustfmt and Clippy. LLVM is not required.
 
 ```sh
-cargo test --locked -p monad-evm2 --all-features
+cargo test --locked -p monad-evm2
+cargo test --locked -p monad-evm2 --features serde,memory_limit
 cargo test --locked -p monad-evm2 --no-default-features --features std,serde
-cargo clippy --locked -p monad-evm2 --all-targets --all-features -- -D warnings
+cargo clippy --locked -p monad-evm2 --all-targets --features serde,memory_limit -- -D warnings
 cargo fmt --all -- --check
-cargo doc --locked -p monad-evm2 --no-deps --all-features --open
+cargo doc --locked -p monad-evm2 --no-deps --features serde --open
 ```
+
+Default tests check protocol behavior, execution gas, receipt charges, and rollback
+without compiling monad-revm or revm. Add the optional comparison checks with:
+
+```sh
+cargo test --locked -p monad-evm2 --features compare-monad-revm
+```
+
+`--all-features` also enables these comparisons. They retain documented differences
+from the reference; they do not override protocol expectations. CI runs independent
+checks on pushes and pull requests. The manual
+[Reference comparisons workflow](../../.github/workflows/reference.yml) runs the
+reference audit for both crates.
 
 Check without the standard library:
 
