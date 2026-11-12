@@ -73,7 +73,7 @@ fn automatic_enforcement_reverts_value_but_keeps_fees_and_nonce() {
             assert_eq!(result.is_success(), !restricted, "{spec}");
             assert_eq!(result.ext.reverted_for_reserve_balance, restricted);
             assert!(!result.ext.dipped_into_reserve);
-            assert_eq!(result.tx_gas_used(), 100_000);
+            assert_eq!(result.ext.charged_gas, 100_000);
             assert_eq!(balance(&mut evm, BENEFICIARY), U256::from(100_000));
             let value = u64::from(!restricted);
             assert_eq!(balance(&mut evm, SENDER), U256::from(INITIAL - 100_000 - value));
@@ -318,7 +318,7 @@ fn root_callbacks_observe_reserve_rejection_before_native_rollback_loses_the_vio
                 evm.transact_with_inspector(&tx(TARGET, 1, 0), &mut observer).unwrap().commit();
             assert_eq!(observer.seen, 1);
             assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
-            assert_eq!(result.tx_gas_used(), 100_000);
+            assert_eq!(result.ext.charged_gas, 100_000);
             assert!(result.logs.is_empty());
             assert_eq!(observer.gas_remaining == 0, ending == [op::INVALID]);
         }

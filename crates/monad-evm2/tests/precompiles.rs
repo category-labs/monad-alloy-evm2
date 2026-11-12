@@ -213,7 +213,7 @@ fn factory_dispatches_top_level_calls_and_preserves_execution_gas() {
                 "{label}"
             );
             // Precompile execution still follows Monad's full-limit transaction charging.
-            assert_eq!(result.tx_gas_used(), TX_GAS, "{label}");
+            assert_eq!(result.ext.charged_gas, TX_GAS, "{label}");
             assert_eq!(result.refunded, 0, "{label}");
         }
     }
@@ -234,7 +234,7 @@ fn nested_calls_enforce_exact_gas_and_return_unused_gas_to_the_caller() {
                     expected.extend_from_slice(&vector.output);
                 }
                 assert_eq!(result.output, expected, "{label}");
-                assert_eq!(result.tx_gas_used(), TX_GAS, "{label}");
+                assert_eq!(result.ext.charged_gas, TX_GAS, "{label}");
 
                 // Re-run with a larger allowance: a successful child returns all
                 // unused gas, while a halted child consumes its whole allowance.

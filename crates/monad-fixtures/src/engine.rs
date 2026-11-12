@@ -91,7 +91,8 @@ pub(crate) fn actual(
     } else {
         "halt"
     };
-    let receipt_gas = matches!(request, Request::Transaction { .. }).then(|| result.tx_gas_used());
+    let receipt_gas =
+        matches!(request, Request::Transaction { .. }).then_some(result.ext.charged_gas);
     Ok(Observation {
         status,
         gas_spent: result.total_gas_spent,

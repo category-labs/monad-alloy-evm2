@@ -588,7 +588,7 @@ fn borrowed_inspector_overrides_installed_and_replay_requires_opt_in() {
         USER,
     );
     let result = evm.transact(&ordinary).unwrap().commit();
-    assert_eq!(result.tx_gas_used(), 21_000);
+    assert_eq!(result.ext.charged_gas, 21_000);
     assert_eq!(balances(&mut evm).0, 1);
 }
 
@@ -609,7 +609,7 @@ fn replay_mode_retains_ordinary_reserve_enforcement() {
     );
     let result = evm.transact(&tx).unwrap().commit();
     assert!(result.ext.reverted_for_reserve_balance);
-    assert_eq!(result.tx_gas_used(), 100_000);
+    assert_eq!(result.ext.charged_gas, 100_000);
     let sender = evm.state_mut().account_info_untracked(&USER).unwrap().unwrap();
     assert_eq!((sender.nonce, sender.balance), (1, MON - fee));
     assert_eq!(balances(&mut evm), (0, U256::ZERO, MON));

@@ -134,7 +134,7 @@ fn execute(
     } else {
         evm.transact(&tx).unwrap().commit()
     };
-    assert_eq!(result.tx_gas_used(), TX_GAS);
+    assert_eq!(result.ext.charged_gas, TX_GAS);
     Run { evm, result, trace }
 }
 

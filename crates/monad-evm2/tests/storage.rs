@@ -168,7 +168,7 @@ impl Fixture {
         } else {
             evm.transact(&tx).unwrap().commit()
         };
-        assert_eq!(result.tx_gas_used(), self.gas);
+        assert_eq!(result.ext.charged_gas, self.gas);
         assert_eq!(result.refunded, 0);
         Run { evm, result, trace }
     }

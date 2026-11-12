@@ -165,7 +165,7 @@ fn native_opt_in_enforces_reserves_without_a_frame_selector() {
                 assert_eq!(trace.frame, Some(spec));
                 assert_eq!((trace.steps, trace.step_ends, trace.calls), (1, 1, 1));
                 assert_eq!(result.is_success(), value == 0 && terminal == op::STOP);
-                assert_eq!(result.tx_gas_used(), GAS);
+                assert_eq!(result.ext.charged_gas, GAS);
                 assert_eq!(
                     host.state_mut().account(&SENDER).unwrap().balance(),
                     U256::from(INITIAL - GAS)
@@ -228,7 +228,7 @@ fn native_observer_enforces_reserves_before_success_and_failure_rollback() {
             assert_eq!(result.ext.halt_reason, Some(MonadHaltReason::ReserveBalanceViolation));
             assert_eq!(trace.halt, result.ext.halt_reason);
             assert_eq!((trace.steps, trace.step_ends, trace.calls), (1, 1, 1));
-            assert_eq!(result.tx_gas_used(), GAS);
+            assert_eq!(result.ext.charged_gas, GAS);
             assert_eq!(
                 host.state_mut().account(&SENDER).unwrap().balance(),
                 U256::from(INITIAL - GAS)
@@ -534,7 +534,7 @@ fn native_defaults_report_reserves_with_or_without_an_inspector() {
                 assert_eq!(result.ext.dipped_into_reserve, success);
                 assert!(!result.ext.reverted_for_reserve_balance);
                 assert_eq!(result.ext.halt_reason, None);
-                assert_eq!(result.tx_gas_used(), GAS);
+                assert_eq!(result.ext.charged_gas, GAS);
                 assert_eq!(
                     host.state_mut().account(&SENDER).unwrap().balance(),
                     U256::from(INITIAL - GAS - u64::from(success))

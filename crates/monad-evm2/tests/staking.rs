@@ -846,7 +846,7 @@ fn assert_calls_as(
             assert_eq!(&result.logs, logs, "{spec} call {nonce}");
         }
         if !system {
-            assert_eq!(result.tx_gas_used(), call.gas_limit);
+            assert_eq!(result.ext.charged_gas, call.gas_limit);
             assert_eq!(result.refunded, 0);
         }
         #[cfg(feature = "compare-monad-revm")]

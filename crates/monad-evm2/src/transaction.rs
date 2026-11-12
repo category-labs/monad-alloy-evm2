@@ -16,9 +16,9 @@ use evm2::{
     EvmFeatures, TxResult,
     env::TxEnvExt,
     ethereum::{
-        access_list_counts, charge_upfront, default_settle_gas, effective_gas_price,
+        access_list_counts, charge_upfront, effective_gas_price,
         eip7702::{AuthRefunds, apply_auth_list, eip7702_authorization_gas},
-        execute_initial_frame, initial_gas_and_reservoir, intrinsic_and_floor_gas,
+        execute_initial_frame, finalize_gas, initial_gas_and_reservoir, intrinsic_and_floor_gas,
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
@@ -67,6 +67,7 @@ type Request<'a, 'host> = TxRequest<'a, 'host, MonadEvmTypes, MonadTxEnvelope>;
 struct PreparedTx {
     gas_price: U256,
     intrinsic: u64,
+    floor: u64,
 }
 
 enum PreparedRequest {
@@ -162,7 +163,7 @@ fn prepare(req: &mut Request<'_, '_>) -> HandlerResult<PreparedRequest> {
     }
     host.ext_mut().frame.base_warm = Some(host.state().prewarm_set().clone());
     host.warm_precompiles();
-    Ok(PreparedRequest::Transaction(PreparedTx { gas_price, intrinsic }))
+    Ok(PreparedRequest::Transaction(PreparedTx { gas_price, intrinsic, floor }))
 }
 
 fn charge_sender(
@@ -240,7 +241,7 @@ fn execute_inner(
 ) -> HandlerResult<TxResult<MonadEvmTypes>> {
     let gas_limit = tx.gas_limit();
     let chain_id = host.version().chain_id;
-    let PreparedTx { gas_price, intrinsic } = prepared;
+    let PreparedTx { gas_price, intrinsic, floor } = prepared;
     *host.tx_env_mut() = TxEnvExt {
         origin: caller,
         gas_price,
@@ -285,22 +286,29 @@ fn execute_inner(
         result.created_address = None;
     }
     result.gas.set_refunded(0);
-    // A full-limit floor makes the receipt and beneficiary use the charged gas while
-    // preserving actual execution consumption and the gas observed inside the EVM.
-    let mut result = default_settle_gas(
+    let mut result = finalize_gas(
         host,
         GasSettlement {
             caller,
             gas_price,
             gas_limit,
-            floor_gas: gas_limit,
+            floor_gas: floor,
             initial_state_gas: 0,
             state_refund: 0,
             result,
         },
     )?;
+    if host.feature(EvmFeatures::FEE_CHARGE) {
+        // The sender already paid the full effective fee. Unused gas is never refunded;
+        // the base fee is burned and the beneficiary receives the full-limit priority fee.
+        let beneficiary = host.block().beneficiary;
+        let priority_fee = gas_price.saturating_sub(host.block().basefee);
+        let reward = U256::from(gas_limit) * priority_fee;
+        host.state_mut().account(&beneficiary)?.add_balance(reward);
+    }
     sync_reserve_balance(host)?;
     result.ext = MonadTxResultExt {
+        charged_gas: gas_limit,
         dipped_into_reserve: host.ext().reserve_balance.has_violation(),
         reverted_for_reserve_balance,
         halt_reason: reverted_for_reserve_balance

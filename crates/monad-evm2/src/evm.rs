@@ -86,9 +86,13 @@ pub struct MonadMessageExt {
     pub hardfork: Option<MonadHardfork>,
 }
 
-/// Reserve-balance outcome attached to a transaction result.
+/// Monad fee and reserve-balance outcome attached to a transaction result.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MonadTxResultExt {
+    /// Gas charged for fees, receipts and block accounting: the full limit for ordinary
+    /// transactions, and zero for system calls. This is independent of execution consumption
+    /// and evm2's EIP-7623 calldata floor.
+    pub charged_gas: u64,
     /// Whether the final transaction state violates reserve-balance rules.
     pub dipped_into_reserve: bool,
     /// Whether reserve-balance enforcement rejected execution.

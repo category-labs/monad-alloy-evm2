@@ -112,7 +112,6 @@ fn receipts_and_balances_across_success_revert_and_halt() {
             .with_block(BlockEnv { basefee: 3, beneficiary: BENEFICIARY, ..Default::default() })
             .build_monad();
         let mut receipt_gas = 0;
-        let mut block_gas = 0;
         for (nonce, (to, limit, stop, consumed, cumulative)) in [
             (TARGET, 100_000, InstrStop::Stop, 21_000, 100_000),
             (REVERTER, 120_000, InstrStop::Revert, 21_004, 220_000),
@@ -144,15 +143,16 @@ fn receipts_and_balances_across_success_revert_and_halt() {
             #[cfg(feature = "compare-monad-revm")]
             assert_eq!(result.total_gas_spent, expected.result.gas().total_gas_spent());
             // The C++ receipt charges the gas limit, including on an early return or revert.
-            assert_eq!(result.floor_gas, limit);
-            assert_eq!(result.tx_gas_used(), limit);
+            assert_eq!(result.floor_gas, 21_000);
+            assert_eq!(result.tx_gas_used(), consumed);
+            assert_eq!(result.execution_gas_spent(), consumed);
+            assert_eq!(result.ext.charged_gas, limit);
             assert_eq!(
                 (result.refunded, result.final_refunded(), result.state_gas_spent()),
                 (0, 0, 0)
             );
-            receipt_gas += result.tx_gas_used();
-            block_gas += result.execution_gas_spent();
-            assert_eq!((receipt_gas, block_gas), (cumulative, cumulative));
+            receipt_gas += result.ext.charged_gas;
+            assert_eq!(receipt_gas, cumulative);
 
             let sender = account(&mut evm, SENDER);
             let reward = account(&mut evm, BENEFICIARY).balance;
@@ -214,7 +214,7 @@ fn dynamic_fee_admission_checks_the_effective_fee_and_execution_checks_value() {
             evm.validate_tx(&tx).unwrap();
             let result = evm.transact(&tx).unwrap().commit();
             assert_eq!(result.stop, stop);
-            assert_eq!(result.tx_gas_used(), limit);
+            assert_eq!(result.ext.charged_gas, limit);
             assert_eq!(evm.tx_env().gas_price, U256::from(price));
             let sender = account(&mut evm, SENDER);
             assert_eq!((sender.nonce, sender.balance), (1, U256::ZERO));
@@ -254,7 +254,10 @@ fn calldata_floor_is_validated_and_execution_consumption_is_preserved() {
         .commit();
     assert!(result.is_success());
     assert_eq!(result.total_gas_spent, 21_080);
-    assert_eq!(result.tx_gas_used(), 100_000);
+    assert_eq!(result.floor_gas, 21_200);
+    assert_eq!(result.tx_gas_used(), 21_200);
+    assert_eq!(result.execution_gas_spent(), 21_200);
+    assert_eq!(result.ext.charged_gas, 100_000);
     assert_eq!(remaining.0, Some(100_000 - 21_080));
 }
 
@@ -276,8 +279,8 @@ fn clearing_storage_and_unused_gas_do_not_refund_an_access_list_transaction() {
     let result = evm.transact(&tx).unwrap().commit();
     assert!(result.is_success());
     assert_eq!(evm.state_mut().storage_slot_untracked(&TARGET, &U256::ZERO).unwrap(), U256::ZERO);
-    assert_eq!((result.refunded, result.final_refunded(), result.tx_gas_used()), (0, 0, 100_000));
-    assert!(result.total_gas_spent < result.tx_gas_used());
+    assert_eq!((result.refunded, result.final_refunded(), result.ext.charged_gas), (0, 0, 100_000));
+    assert!(result.total_gas_spent < result.ext.charged_gas);
     assert_eq!(account(&mut evm, SENDER).balance, U256::ZERO);
     assert_eq!(account(&mut evm, BENEFICIARY).balance, U256::from(100_000));
 }
@@ -326,7 +329,7 @@ fn set_code_charges_the_limit_and_preserves_delegation_on_revert() {
     let result = evm.transact(&set_code(&[AUTHORITY])).unwrap().commit();
     assert!(result.is_revert());
     assert_eq!(result.total_gas_spent, 46_004);
-    assert_eq!((result.refunded, result.tx_gas_used()), (0, 100_000));
+    assert_eq!((result.refunded, result.ext.charged_gas), (0, 100_000));
     assert_eq!(account(&mut evm, AUTHORITY).nonce, 1);
     let code = evm.state_mut().account(&AUTHORITY).unwrap().load_code().unwrap();
     assert_eq!(code.eip7702_address(), Some(REVERTER));
@@ -343,6 +346,7 @@ fn system_calls_only_meter_execution() {
     let result = evm.system_call(call).unwrap().commit();
     assert!(result.is_revert());
     assert_eq!((result.floor_gas, result.tx_gas_used(), result.total_gas_spent), (0, 4, 4));
+    assert_eq!(result.ext.charged_gas, 0);
     let sender = account(&mut evm, SENDER);
     assert_eq!((sender.nonce, sender.balance), (0, U256::ONE));
     assert_eq!(account(&mut evm, BENEFICIARY).balance, U256::ZERO);
@@ -367,7 +371,7 @@ fn simulation_switches_control_balance_top_up_and_fee_transfers() {
             recovered(MonadTxEnvelope::Legacy(TxLegacy { value: U256::ONE, ..legacy(100_000, 5) }));
         let result = evm.transact(&tx).unwrap().commit();
         assert!(result.is_success());
-        assert_eq!(result.tx_gas_used(), 100_000);
+        assert_eq!(result.ext.charged_gas, 100_000);
         assert_eq!(account(&mut evm, TARGET).balance, U256::ONE);
         assert_eq!(account(&mut evm, SENDER).balance, U256::ZERO);
         let reward = if charge_fees { 200_000 } else { 0 };

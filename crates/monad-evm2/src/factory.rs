@@ -89,7 +89,7 @@ impl MonadEvmBuilder {
     ///
     /// Legacy, access-list, dynamic-fee and set-code transactions pay for their full
     /// gas limit at the effective price. The beneficiary receives the priority fee.
-    /// [`tx_gas_used()`](evm2::TxResultExt::tx_gas_used) reports the charged limit,
+    /// [`charged_gas`](crate::MonadTxResultExt::charged_gas) reports the charged limit,
     /// and [`total_gas_spent`](evm2::TxResultExt::total_gas_spent) records execution
     /// consumption. Cryptographic precompiles use Monad pricing and activation.
     /// `CREATE` and `CREATE2` reject delegated execution contexts. Memory expansion

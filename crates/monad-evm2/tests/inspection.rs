@@ -341,8 +341,8 @@ fn edited_caller_memory_and_owned_inputs_reach_monad_handlers() {
                 assert!(result.is_success(), "{spec} {target} owned={owned}");
                 assert_eq!(&result.output[..], expected, "{spec} {target} owned={owned}");
                 assert_eq!((editor.calls, editor.ends), (1, 1));
-                assert_eq!(result.tx_gas_used(), 1_000_000);
-                assert!(result.total_gas_spent < result.tx_gas_used());
+                assert_eq!(result.ext.charged_gas, 1_000_000);
+                assert!(result.total_gas_spent < result.ext.charged_gas);
             }
         }
     }

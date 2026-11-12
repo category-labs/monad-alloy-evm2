@@ -42,7 +42,7 @@ let tx = Recovered::new_unchecked(
 
 let result = evm.transact(&tx).unwrap().commit();
 assert!(result.is_success());
-assert_eq!(result.tx_gas_used(), 100_000);
+assert_eq!(result.ext.charged_gas, 100_000);
 assert_eq!(result.total_gas_spent, 21_000);
 ```
 
@@ -51,10 +51,14 @@ the handle rolls it back. Supply block history through `evm.ext_mut().chain` and
 runtime overrides through the builder's `limits`. Use `transact_with_inspector()`
 to inspect one transaction or `set_inspector()` to install an inspector.
 
-Ordinary transaction receipts report the full gas limit through `tx_gas_used()`.
-For estimation and profiling, use `total_gas_spent`, which retains execution
-consumption including intrinsic gas. `execution_gas_spent()` includes the charge
-floor and is intended for block accounting.
+Use `result.ext.charged_gas` for Monad receipts and block gas accounting. Ordinary
+transactions charge their full gas limit; system calls charge zero. Fee settlement
+uses this charge even when execution finishes early or reverts.
+
+`total_gas_spent` retains execution consumption including intrinsic gas.
+`floor_gas` is the EIP-7623 calldata floor, and `tx_gas_used()` applies that floor
+to consumption for simulation and estimation. These evm2 fields do not represent
+Monad's full-limit receipt charge.
 
 ## Execution modes
 

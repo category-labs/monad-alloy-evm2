@@ -26,7 +26,7 @@
 //! let mut inspector = NoopInspector::default();
 //! let result = execution.transact(&mut host, &tx, Some(&mut inspector))?.commit();
 //! assert!(result.is_success());
-//! assert_eq!(result.tx_gas_used(), 100_000);
+//! assert_eq!(result.ext.charged_gas, 100_000);
 //! # Ok::<(), evm2::registry::HandlerError>(())
 //! ```
 //!

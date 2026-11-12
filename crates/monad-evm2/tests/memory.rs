@@ -249,7 +249,7 @@ impl Fixture {
             evm.transact(&tx).unwrap().commit()
         };
         assert_eq!(evm.ext().memory_pool_offset(), 0);
-        assert_eq!(result.tx_gas_used(), self.gas);
+        assert_eq!(result.ext.charged_gas, self.gas);
         Run { evm, result, trace }
     }
 
