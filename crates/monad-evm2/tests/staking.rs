@@ -1,11 +1,11 @@
-//! Differential staking execution against monad-revm 0.8.0.
+//! Staking lifecycle, gas and rollback checks, with optional reference comparisons.
 
+#[cfg(feature = "compare-monad-revm")]
 mod common;
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, Log, U256};
 use alloy_sol_types::{SolCall, SolEvent};
-use common::FORKS;
 use evm2::{
     AccountInfo, TxResult,
     bytecode::Bytecode,
@@ -31,13 +31,16 @@ use monad_evm2::{
     staking_system_tx, syscall_on_epoch_change_calldata, syscall_reward_calldata,
     syscall_snapshot_calldata,
 };
+use std::collections::BTreeMap;
+
+#[cfg(feature = "compare-monad-revm")]
 use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
+#[cfg(feature = "compare-monad-revm")]
 use revm::{
     DatabaseCommit, ExecuteEvm, context::TxEnv, context_interface::result::ExecutionResult,
     database::InMemoryDB as ReferenceDB, handler::SystemCallEvm,
     state::AccountInfo as ReferenceAccount,
 };
-use std::collections::BTreeMap;
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const VALIDATOR: u64 = 7;
@@ -61,7 +64,7 @@ fn system_prestate() -> Vec<(U256, U256)> {
 }
 
 #[test]
-fn system_rewards_and_epoch_transitions_match_release() {
+fn system_rewards_and_epoch_transitions() {
     for spec in MonadHardfork::ALL {
         let reward = call(syscall_reward_calldata(AUTHOR, MON * U256::from(10)));
         let results = assert_calls_as(
@@ -721,7 +724,7 @@ fn prestate() -> Vec<(U256, U256)> {
     ]
 }
 
-/// Compare every changed slot, outcome, return data, logs and touched balance/nonce.
+/// Execute staking operations, checking rollback and optional reference observations.
 fn assert_calls(
     spec: MonadHardfork,
     slots: &[(U256, U256)],
@@ -737,20 +740,25 @@ fn assert_calls_as(
     caller: Address,
     system: bool,
 ) -> Vec<TxResult<MonadEvmTypes>> {
-    let reference_spec = FORKS.iter().find(|(fork, _)| *fork == spec).unwrap().1;
+    #[cfg(feature = "compare-monad-revm")]
+    let reference_spec = common::reference_spec(spec);
     let mut db = InMemoryDB::default();
+    #[cfg(feature = "compare-monad-revm")]
     let mut reference_db = ReferenceDB::default();
     for address in [SENDER, STAKING_ADDRESS, SYSTEM_ADDRESS] {
         let balance = MON * U256::from(1_000_000_000u64);
         db.insert_account_info(&address, AccountInfo::default().with_balance(balance));
+        #[cfg(feature = "compare-monad-revm")]
         reference_db
             .insert_account_info(address, ReferenceAccount::default().with_balance(balance));
     }
     for (key, value) in slots {
         db.insert_account_storage(&STAKING_ADDRESS, key, value);
+        #[cfg(feature = "compare-monad-revm")]
         reference_db.insert_account_storage(STAKING_ADDRESS, *key, *value).unwrap();
     }
     let mut evm = MonadEvmBuilder::new(1).create_evm(spec, MonadBlockEnv::default(), db);
+    #[cfg(feature = "compare-monad-revm")]
     let mut reference = monad_context_with_db(reference_db)
         .with_cfg(MonadCfgEnv::new_with_spec(reference_spec).with_chain_id(1))
         .build_monad();
@@ -765,6 +773,7 @@ fn assert_calls_as(
             gas_limit: call.gas_limit,
             ..Default::default()
         };
+        #[cfg(feature = "compare-monad-revm")]
         let expected = if system {
             assert_eq!(call.value, U256::ZERO);
             reference.system_call_with_caller(caller, STAKING_ADDRESS, call.input.clone()).unwrap()
@@ -785,6 +794,12 @@ fn assert_calls_as(
                 )
                 .unwrap()
         };
+        if system {
+            assert_eq!(call.value, U256::ZERO);
+        }
+        let balances = [SENDER, STAKING_ADDRESS, SYSTEM_ADDRESS].map(|address| {
+            (address, evm.state_mut().account_info_untracked(&address).unwrap().unwrap().balance)
+        });
         let tx = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), caller);
         let pending = if system {
             evm.system_call(staking_system_tx(call.input.clone()).with_caller(caller))
@@ -803,6 +818,7 @@ fn assert_calls_as(
                     .map(move |(key, slot)| ((account.address, *key), slot.value.current))
             })
             .collect::<BTreeMap<_, _>>();
+        #[cfg(feature = "compare-monad-revm")]
         let expected_slots = expected
             .state
             .iter()
@@ -815,47 +831,66 @@ fn assert_calls_as(
             })
             .collect::<BTreeMap<_, _>>();
         let result = pending.commit();
-        assert_eq!(actual_slots, expected_slots, "{spec} call {nonce}");
-        assert_eq!(result.is_success(), expected.result.is_success(), "{spec} call {nonce}");
-        assert_eq!(
-            result.stop == InstrStop::Revert,
-            matches!(expected.result, ExecutionResult::Revert { .. }),
-            "{spec} call {nonce}"
-        );
-        assert_eq!(
-            result.output.as_ref(),
-            expected.result.output().map_or(&[][..], |b| b.as_ref()),
-            "{spec} call {nonce}"
-        );
+        if !result.is_success() {
+            assert!(actual_slots.is_empty(), "{spec} call {nonce}: storage rollback");
+            assert!(result.logs.is_empty(), "{spec} call {nonce}: log rollback");
+            for (address, before) in balances {
+                assert_eq!(
+                    evm.state_mut().account_info_untracked(&address).unwrap().unwrap().balance,
+                    before,
+                    "{spec} call {nonce}: {address} balance rollback"
+                );
+            }
+        }
+        if let Some(logs) = &call.expected_logs {
+            assert_eq!(&result.logs, logs, "{spec} call {nonce}");
+        }
         if !system {
+            assert_eq!(result.tx_gas_used(), call.gas_limit);
+            assert_eq!(result.refunded, 0);
+        }
+        #[cfg(feature = "compare-monad-revm")]
+        {
+            assert_eq!(actual_slots, expected_slots, "{spec} call {nonce}");
+            assert_eq!(result.is_success(), expected.result.is_success(), "{spec} call {nonce}");
             assert_eq!(
-                result.total_gas_spent,
-                expected.result.gas().total_gas_spent(),
+                result.stop == InstrStop::Revert,
+                matches!(expected.result, ExecutionResult::Revert { .. }),
                 "{spec} call {nonce}"
             );
-        }
-        assert_eq!(
-            result.logs.as_slice(),
-            call.expected_logs.as_deref().unwrap_or_else(|| expected.result.logs()),
-            "{spec} call {nonce}"
-        );
-        for (address, account) in &expected.state {
-            let actual =
-                evm.state_mut().account_info_untracked(address).unwrap().unwrap_or_default();
             assert_eq!(
-                (actual.balance, actual.nonce),
-                (account.info.balance, account.info.nonce),
-                "{spec} call {nonce}: {address}"
+                result.output.as_ref(),
+                expected.result.output().map_or(&[][..], |b| b.as_ref()),
+                "{spec} call {nonce}"
             );
+            if !system {
+                assert_eq!(
+                    result.total_gas_spent,
+                    expected.result.gas().total_gas_spent(),
+                    "{spec} call {nonce}"
+                );
+            }
+            if call.expected_logs.is_none() {
+                assert_eq!(result.logs.as_slice(), expected.result.logs(), "{spec} call {nonce}");
+            }
+            for (address, account) in &expected.state {
+                let actual =
+                    evm.state_mut().account_info_untracked(address).unwrap().unwrap_or_default();
+                assert_eq!(
+                    (actual.balance, actual.nonce),
+                    (account.info.balance, account.info.nonce),
+                    "{spec} call {nonce}: {address}"
+                );
+            }
+            reference.0.ctx.journaled_state.database.commit(expected.state);
         }
-        reference.0.ctx.journaled_state.database.commit(expected.state);
         results.push(result);
     }
     results
 }
 
 #[test]
-fn query_abi_gas_and_error_ordering_match_release() {
+fn query_abi_gas_and_error_boundaries() {
     let queries = [
         (getEpochCall {}.abi_encode(), gas::GET_EPOCH),
         (getProposerValIdCall {}.abi_encode(), gas::GET_PROPOSER_VAL_ID),
@@ -900,6 +935,14 @@ fn query_abi_gas_and_error_ordering_match_release() {
                 call.gas_limit = intrinsic + budget;
                 let results = assert_calls(spec, &prestate(), &[call]);
                 assert_eq!(results[0].is_success(), budget >= *cost, "{spec} {cost} {budget}");
+                assert_eq!(
+                    results[0].total_gas_spent,
+                    intrinsic + budget.min(*cost),
+                    "{spec} {cost} {budget}"
+                );
+                if budget < *cost {
+                    assert!(results[0].stop.is_out_of_gas());
+                }
             }
             let mut payable = call(input.clone());
             payable.value = U256::ONE;

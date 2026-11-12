@@ -2196,6 +2196,7 @@ name = "monad-evm2"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-sol-types",
  "evm2",

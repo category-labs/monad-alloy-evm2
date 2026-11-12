@@ -1,9 +1,9 @@
-//! Memory pricing, opcode behavior and pooled limits against monad-revm 0.8.0.
+//! Memory pricing, opcode behavior and pooled limits, with optional reference comparisons.
 
 mod common;
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, Log, TxKind, U256, keccak256};
 use common::FORKS;
 use evm2::{
     AccountInfo, ExecutionError, Inspector, TxResult,
@@ -16,9 +16,12 @@ use monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmBuilder,
     MonadEvmTypes, MonadHardfork, MonadTxEnvelope, monad_memory_cost,
 };
+
+#[cfg(feature = "compare-monad-revm")]
 use monad_revm::{
     MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,
 };
+#[cfg(feature = "compare-monad-revm")]
 use revm::{
     ExecuteEvm,
     context::{BlockEnv, TxEnv},
@@ -250,6 +253,7 @@ impl Fixture {
         Run { evm, result, trace }
     }
 
+    #[cfg(feature = "compare-monad-revm")]
     fn reference(&self, spec: ReferenceHardfork) -> ExecutionResult {
         let mut db = ReferenceDB::default();
         db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
@@ -282,18 +286,35 @@ impl Fixture {
         evm.transact(tx).unwrap().result
     }
 
-    fn compare(&self, forks: (MonadHardfork, ReferenceHardfork)) -> Run {
-        let actual = self.run(forks.0, true);
-        let expected = self.reference(forks.1);
-        assert_eq!(actual.result.is_success(), expected.is_success(), "{forks:?}: {expected:?}");
-        assert_eq!(actual.result.is_revert(), matches!(expected, ExecutionResult::Revert { .. }));
-        assert_eq!(actual.result.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
-        assert_eq!(actual.result.logs, expected.logs());
-        assert_eq!(actual.result.total_gas_spent, expected.gas().total_gas_spent(), "{forks:?}");
-        if let ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. } = expected {
-            assert!(actual.result.stop.is_out_of_gas(), "{:?}", actual.result.stop);
+    fn compare(&self, forks: MonadHardfork) -> Run {
+        let actual = self.run(forks, true);
+        #[cfg(feature = "compare-monad-revm")]
+        {
+            let expected = self.reference(common::reference_spec(forks));
+            assert_eq!(
+                actual.result.is_success(),
+                expected.is_success(),
+                "{forks:?}: {expected:?}"
+            );
+            assert_eq!(
+                actual.result.is_revert(),
+                matches!(expected, ExecutionResult::Revert { .. })
+            );
+            assert_eq!(
+                actual.result.output.as_ref(),
+                expected.output().map_or(&[][..], Bytes::as_ref)
+            );
+            assert_eq!(actual.result.logs, expected.logs());
+            assert_eq!(
+                actual.result.total_gas_spent,
+                expected.gas().total_gas_spent(),
+                "{forks:?}"
+            );
+            if let ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. } = expected {
+                assert!(actual.result.stop.is_out_of_gas(), "{:?}", actual.result.stop);
+            }
         }
-        let plain = self.run(forks.0, false);
+        let plain = self.run(forks, false);
         assert_eq!(actual.result, plain.result);
         actual
     }
@@ -354,7 +375,7 @@ fn memory_cost(spec: MonadHardfork, words: usize) -> u64 {
 }
 
 #[test]
-fn word_rounding_and_incremental_expansion_match_release() {
+fn word_rounding_and_incremental_expansion_follow_fork_pricing() {
     let sizes = [1, 32, 33, 64, 65, 32, 96, 97, 161];
     let mut code = vec![];
     for size in sizes {
@@ -373,7 +394,7 @@ fn word_rounding_and_incremental_expansion_match_release() {
             assert_eq!(step.memory, words * 32);
             assert_eq!(
                 step.cost,
-                3 + memory_cost(forks.0, words) - memory_cost(forks.0, previous_words)
+                3 + memory_cost(forks, words) - memory_cost(forks, previous_words)
             );
             previous_words = words;
         }
@@ -446,11 +467,81 @@ fn memory_opcodes_match_outputs_logs_and_execution_gas() {
             let mut fixture = Fixture::new(code);
             fixture.accounts.push((CHILD, child.clone().into()));
             fixture.input = Bytes::from_static(b"memory-copy-input");
+            let offset = offset.to::<usize>();
+            let mut memory = vec![0u8; offset + 64];
+            memory[..32].copy_from_slice(&U256::from(0x123456).to_be_bytes::<32>());
+            let mut logs = Vec::new();
+            match opcode {
+                op::MLOAD => {
+                    let word = memory[offset..offset + 32].to_vec();
+                    memory[..32].copy_from_slice(&word);
+                }
+                op::MSTORE => memory[offset..offset + 32]
+                    .copy_from_slice(&U256::from(0xfedc).to_be_bytes::<32>()),
+                op::MSTORE8 => memory[offset] = 0xdc,
+                op::MCOPY => memory.copy_within(..33, offset),
+                op::KECCAK256 => {
+                    let hash = keccak256(&memory[offset..offset + 33]);
+                    memory[..32].copy_from_slice(hash.as_slice());
+                }
+                op::CALLDATACOPY | op::CODECOPY | op::EXTCODECOPY => {
+                    let source = match opcode {
+                        op::CALLDATACOPY => fixture.input.as_ref(),
+                        op::CODECOPY => fixture.code.as_ref(),
+                        _ => child.as_slice(),
+                    };
+                    memory[offset..offset + 33].fill(0);
+                    let copied = source.len().min(33);
+                    memory[offset..offset + copied].copy_from_slice(&source[..copied]);
+                }
+                op::RETURNDATACOPY => {
+                    memory[offset..offset + 33].fill(0);
+                    memory[offset..offset + 32]
+                        .copy_from_slice(&U256::from(0xfeed).to_be_bytes::<32>());
+                }
+                op::LOG0..=op::LOG4 => logs.push(Log::new_unchecked(
+                    ROOT,
+                    (1..=opcode - op::LOG0).map(|i| U256::from(i).into()).collect(),
+                    Bytes::copy_from_slice(&memory[offset..offset + 33]),
+                )),
+                _ => {}
+            }
+            let output = if matches!(opcode, op::RETURN | op::REVERT) {
+                &memory[offset..offset + 33]
+            } else {
+                memory.as_slice()
+            };
+            let length = match opcode {
+                op::MSTORE8 => 1,
+                op::MSTORE | op::MLOAD => 32,
+                _ => 33,
+            };
+            let words = (offset + length).div_ceil(32).max(1);
+            let opcode_cost = match opcode {
+                op::MLOAD | op::MSTORE | op::MSTORE8 => 3,
+                op::MCOPY | op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY => 9,
+                op::EXTCODECOPY => 10_106,
+                op::KECCAK256 => 42,
+                op::LOG0..=op::LOG4 => 375 + 8 * 33 + 375 * u64::from(opcode - op::LOG0),
+                _ => 0,
+            };
             for forks in FORKS {
                 let actual = fixture.compare(forks);
-                assert!(
-                    actual.result.is_success() || opcode == op::REVERT,
-                    "{forks:?}/{opcode:#x}"
+                assert_eq!(actual.result.is_revert(), opcode == op::REVERT);
+                assert_eq!(actual.result.is_success(), opcode != op::REVERT);
+                assert_eq!(actual.result.output.as_ref(), output, "{forks:?}/{opcode:#x}/{offset}");
+                assert_eq!(actual.result.logs, logs, "{forks:?}/{opcode:#x}/{offset}");
+                let step = actual
+                    .trace
+                    .steps
+                    .iter()
+                    .filter(|s| s.opcode == opcode)
+                    .nth(usize::from(opcode == op::MSTORE))
+                    .unwrap();
+                assert_eq!(
+                    step.cost,
+                    opcode_cost + memory_cost(forks, words) - memory_cost(forks, 1),
+                    "{forks:?}/{opcode:#x}/{offset}"
                 );
             }
         }
@@ -517,7 +608,7 @@ fn creation_expansion_keeps_initcode_charges_and_inspector_step_costs() {
                 assert_eq!(
                     step.cost,
                     32_000
-                        + memory_cost(forks.0, words)
+                        + memory_cost(forks, words)
                         + len.div_ceil(32) as u64 * if create2 { 8 } else { 2 }
                 );
                 let required = actual.result.total_gas_spent;
@@ -590,8 +681,9 @@ fn expansion_gas_and_reserved_copy_cost_have_exact_failure_boundaries() {
             let actual = fixture.compare(forks);
             assert_eq!(actual.result.stop, InstrStop::MemoryOOG);
             assert_eq!(actual.trace.steps.iter().find(|s| s.opcode == opcode).unwrap().memory, 0);
+            #[cfg(feature = "compare-monad-revm")]
             assert!(matches!(
-                fixture.reference(forks.1),
+                fixture.reference(common::reference_spec(forks)),
                 ExecutionResult::Halt { reason: HaltReason::OutOfGas(OutOfGasError::Memory), .. }
             ));
             fixture.gas = GAS;
@@ -790,7 +882,7 @@ fn initcode_gas_is_reserved_before_allocating_creation_memory() {
         let mut fixture = Fixture::new(code);
         for forks in FORKS {
             let pushes = if opcode == op::CREATE2 { 10 } else { 7 };
-            let expansion_boundary = 21_000 + pushes + 4 + memory_cost(forks.0, 2);
+            let expansion_boundary = 21_000 + pushes + 4 + memory_cost(forks, 2);
             for enough_memory_gas in [false, true] {
                 fixture.gas = expansion_boundary - u64::from(!enough_memory_gas);
                 let actual = fixture.compare(forks);
@@ -914,7 +1006,7 @@ fn inspector_overrides_and_fatal_errors_restore_the_memory_pool() {
         return_word(&mut parent);
         let mut fixture = Fixture::new(parent);
         fixture.memory_limit = Some(128);
-        for (spec, _) in FORKS {
+        for spec in FORKS {
             for fatal in [false, true] {
                 let mut actual = fixture.run(spec, false);
                 let tx = |nonce| {

@@ -217,194 +217,218 @@ impl ReserveBalanceTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{vec, vec::Vec};
-    use revm::state::{Account, AccountInfo, EvmState};
-
-    type TheirTracker = monad_revm::reserve_balance::tracker::ReserveBalanceTracker;
-    type TheirInit<'a> = monad_revm::reserve_balance::tracker::ReserveBalanceInit<'a>;
-
-    fn view(account: &Account) -> ReserveAccount {
+    fn account(original: u64, balance: u64) -> ReserveAccount {
         ReserveAccount {
-            balance: account.info.balance,
-            original_balance: account.original_info().balance,
-            code_hash: account.info.code_hash,
-            original_code_hash: account.original_info().code_hash,
-            is_delegated: account
-                .info
-                .code
-                .as_ref()
-                .or(account.original_info().code.as_ref())
-                .is_some_and(revm::bytecode::Bytecode::is_eip7702),
-            selfdestructed_created_locally: account.is_selfdestructed()
-                && account.is_created_locally(),
-        }
-    }
-
-    fn to_theirs(chain: &MonadChainContext) -> monad_revm::MonadChainContext {
-        monad_revm::MonadChainContext {
-            parent_senders_and_authorities: chain
-                .parent_senders_and_authorities
-                .iter()
-                .copied()
-                .collect(),
-            grandparent_senders_and_authorities: chain
-                .grandparent_senders_and_authorities
-                .iter()
-                .copied()
-                .collect(),
-            current_block_senders: chain.current_block_senders.clone(),
-            current_block_authorities: chain.current_block_authorities.clone(),
-            current_tx_index: chain.current_tx_index,
-            max_reserve_balance: chain.max_reserve_balance,
-        }
-    }
-
-    fn account(original: u64, current: u64) -> Account {
-        let mut account =
-            Account::from(AccountInfo { balance: U256::from(original), ..Default::default() });
-        account.info.balance = U256::from(current);
-        account
-    }
-
-    fn delegated_account(original: u64, current: u64) -> Account {
-        let code = revm::bytecode::Bytecode::new_eip7702(Address::repeat_byte(0xaa));
-        let info = AccountInfo::default().with_code(code);
-        let mut account = Account::from(AccountInfo { balance: U256::from(original), ..info });
-        account.info.balance = U256::from(current);
-        account
-    }
-
-    fn contract_account(original: u64, current: u64) -> Account {
-        let code = revm::bytecode::Bytecode::new_raw(vec![0x00].into());
-        let info = AccountInfo::default().with_code(code);
-        let mut account = Account::from(AccountInfo { balance: U256::from(original), ..info });
-        account.info.balance = U256::from(current);
-        account
-    }
-
-    /// A step applied to both trackers.
-    enum Step {
-        Debit(Address, Account),
-        Credit(Address, Account),
-        Revert(Vec<(Address, Account)>),
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn assert_parity(
-        chain: &MonadChainContext,
-        spec: MonadHardfork,
-        sender: Address,
-        sender_account: &Account,
-        delegated: bool,
-        price: u128,
-        gas_limit: u64,
-        steps: Vec<Step>,
-    ) {
-        let theirs_chain = to_theirs(chain);
-        let their_spec = <monad_revm::MonadHardfork as core::str::FromStr>::from_str(spec.into())
-            .expect("known spec");
-        let mut theirs = TheirTracker::default();
-        theirs.init(TheirInit {
-            chain: &theirs_chain,
-            spec: their_spec,
-            sender,
-            effective_gas_price: price,
-            gas_limit,
-            sender_is_delegated: delegated,
-            sender_account: Some(sender_account),
-        });
-        let sender_view = view(sender_account);
-        let mut ours = ReserveBalanceTracker::default();
-        ours.init(ReserveBalanceInit {
-            chain,
-            spec,
-            sender,
-            effective_gas_price: price,
-            gas_limit,
-            sender_is_delegated: delegated,
-            sender_account: Some(&sender_view),
-        });
-        assert_eq!(ours.has_violation(), theirs.has_violation(), "after init");
-        for (index, step) in steps.into_iter().enumerate() {
-            match step {
-                Step::Debit(address, account) => {
-                    theirs.on_debit(Some(&account), address);
-                    ours.on_debit(Some(&view(&account)), address);
-                }
-                Step::Credit(address, account) => {
-                    theirs.on_credit(Some(&account), address);
-                    ours.on_credit(Some(&view(&account)), address);
-                }
-                Step::Revert(accounts) => {
-                    let state = EvmState::from_iter(accounts.iter().cloned());
-                    theirs.on_checkpoint_revert(accounts.iter().map(|(a, _)| *a), &state);
-                    let views: Vec<_> = accounts.iter().map(|(a, acc)| (*a, view(acc))).collect();
-                    ours.on_checkpoint_revert(views.iter().map(|(a, v)| (*a, Some(v))));
-                }
-            }
-            assert_eq!(ours.has_violation(), theirs.has_violation(), "after step {index}");
-        }
-    }
-
-    #[test]
-    fn tracker_outcomes_match_monad_revm() {
-        let sender = Address::with_last_byte(1);
-        let other = Address::with_last_byte(2);
-        let restricted = MonadChainContext {
-            parent_senders_and_authorities: [sender].into_iter().collect(),
-            max_reserve_balance: U256::from(10),
+            original_balance: U256::from(original),
+            balance: U256::from(balance),
             ..Default::default()
-        };
-        let fresh = MonadChainContext { max_reserve_balance: U256::from(10), ..Default::default() };
+        }
+    }
 
-        for spec in MonadHardfork::ALL {
-            for chain in [&restricted, &fresh] {
-                for delegated in [false, true] {
-                    // Sender dips below the reserve after fees.
-                    assert_parity(
-                        chain,
-                        spec,
-                        sender,
-                        &account(12, 9),
-                        delegated,
-                        1,
-                        2,
-                        vec![Step::Credit(sender, account(12, 11))],
-                    );
-                    // Sender fees exceed the reserve.
-                    assert_parity(chain, spec, sender, &account(12, 12), delegated, 3, 5, vec![]);
-                    // A non-sender EOA dips and is restored by a credit, then a revert.
-                    assert_parity(
-                        chain,
-                        spec,
-                        sender,
-                        &account(100, 100),
-                        delegated,
-                        0,
-                        0,
-                        vec![
-                            Step::Debit(other, account(12, 5)),
-                            Step::Credit(other, account(12, 9)),
-                            Step::Credit(other, account(12, 10)),
-                            Step::Debit(other, account(12, 1)),
-                            Step::Revert(vec![(other, account(12, 12))]),
-                        ],
-                    );
-                    // Delegated EOAs are subject accounts, contracts are not.
-                    assert_parity(
-                        chain,
-                        spec,
-                        sender,
-                        &account(100, 100),
-                        delegated,
-                        0,
-                        0,
-                        vec![
-                            Step::Debit(other, delegated_account(12, 3)),
-                            Step::Debit(STAKING_ADDRESS, account(12, 3)),
-                            Step::Debit(Address::with_last_byte(9), contract_account(12, 0)),
-                        ],
-                    );
+    #[cfg(feature = "compare-monad-revm")]
+    mod reference {
+        use super::*;
+        use alloc::{vec, vec::Vec};
+        use revm::state::{Account, AccountInfo, EvmState};
+
+        type TheirTracker = monad_revm::reserve_balance::tracker::ReserveBalanceTracker;
+        type TheirInit<'a> = monad_revm::reserve_balance::tracker::ReserveBalanceInit<'a>;
+
+        fn view(account: &Account) -> ReserveAccount {
+            ReserveAccount {
+                balance: account.info.balance,
+                original_balance: account.original_info().balance,
+                code_hash: account.info.code_hash,
+                original_code_hash: account.original_info().code_hash,
+                is_delegated: account
+                    .info
+                    .code
+                    .as_ref()
+                    .or(account.original_info().code.as_ref())
+                    .is_some_and(revm::bytecode::Bytecode::is_eip7702),
+                selfdestructed_created_locally: account.is_selfdestructed()
+                    && account.is_created_locally(),
+            }
+        }
+
+        fn to_theirs(chain: &MonadChainContext) -> monad_revm::MonadChainContext {
+            monad_revm::MonadChainContext {
+                parent_senders_and_authorities: chain
+                    .parent_senders_and_authorities
+                    .iter()
+                    .copied()
+                    .collect(),
+                grandparent_senders_and_authorities: chain
+                    .grandparent_senders_and_authorities
+                    .iter()
+                    .copied()
+                    .collect(),
+                current_block_senders: chain.current_block_senders.clone(),
+                current_block_authorities: chain.current_block_authorities.clone(),
+                current_tx_index: chain.current_tx_index,
+                max_reserve_balance: chain.max_reserve_balance,
+            }
+        }
+
+        fn account(original: u64, current: u64) -> Account {
+            let mut account =
+                Account::from(AccountInfo { balance: U256::from(original), ..Default::default() });
+            account.info.balance = U256::from(current);
+            account
+        }
+
+        fn delegated_account(original: u64, current: u64) -> Account {
+            let code = revm::bytecode::Bytecode::new_eip7702(Address::repeat_byte(0xaa));
+            let info = AccountInfo::default().with_code(code);
+            let mut account = Account::from(AccountInfo { balance: U256::from(original), ..info });
+            account.info.balance = U256::from(current);
+            account
+        }
+
+        fn contract_account(original: u64, current: u64) -> Account {
+            let code = revm::bytecode::Bytecode::new_raw(vec![0x00].into());
+            let info = AccountInfo::default().with_code(code);
+            let mut account = Account::from(AccountInfo { balance: U256::from(original), ..info });
+            account.info.balance = U256::from(current);
+            account
+        }
+
+        /// A step applied to both trackers.
+        enum Step {
+            Debit(Address, Account),
+            Credit(Address, Account),
+            Revert(Vec<(Address, Account)>),
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn assert_parity(
+            chain: &MonadChainContext,
+            spec: MonadHardfork,
+            sender: Address,
+            sender_account: &Account,
+            delegated: bool,
+            price: u128,
+            gas_limit: u64,
+            steps: Vec<Step>,
+        ) {
+            let theirs_chain = to_theirs(chain);
+            let their_spec =
+                <monad_revm::MonadHardfork as core::str::FromStr>::from_str(spec.into())
+                    .expect("known spec");
+            let mut theirs = TheirTracker::default();
+            theirs.init(TheirInit {
+                chain: &theirs_chain,
+                spec: their_spec,
+                sender,
+                effective_gas_price: price,
+                gas_limit,
+                sender_is_delegated: delegated,
+                sender_account: Some(sender_account),
+            });
+            let sender_view = view(sender_account);
+            let mut ours = ReserveBalanceTracker::default();
+            ours.init(ReserveBalanceInit {
+                chain,
+                spec,
+                sender,
+                effective_gas_price: price,
+                gas_limit,
+                sender_is_delegated: delegated,
+                sender_account: Some(&sender_view),
+            });
+            assert_eq!(ours.has_violation(), theirs.has_violation(), "after init");
+            for (index, step) in steps.into_iter().enumerate() {
+                match step {
+                    Step::Debit(address, account) => {
+                        theirs.on_debit(Some(&account), address);
+                        ours.on_debit(Some(&view(&account)), address);
+                    }
+                    Step::Credit(address, account) => {
+                        theirs.on_credit(Some(&account), address);
+                        ours.on_credit(Some(&view(&account)), address);
+                    }
+                    Step::Revert(accounts) => {
+                        let state = EvmState::from_iter(accounts.iter().cloned());
+                        theirs.on_checkpoint_revert(accounts.iter().map(|(a, _)| *a), &state);
+                        let views: Vec<_> =
+                            accounts.iter().map(|(a, acc)| (*a, view(acc))).collect();
+                        ours.on_checkpoint_revert(views.iter().map(|(a, v)| (*a, Some(v))));
+                    }
+                }
+                assert_eq!(ours.has_violation(), theirs.has_violation(), "after step {index}");
+            }
+        }
+
+        #[test]
+        fn tracker_outcomes_match_monad_revm() {
+            let sender = Address::with_last_byte(1);
+            let other = Address::with_last_byte(2);
+            let restricted = MonadChainContext {
+                parent_senders_and_authorities: [sender].into_iter().collect(),
+                max_reserve_balance: U256::from(10),
+                ..Default::default()
+            };
+            let fresh =
+                MonadChainContext { max_reserve_balance: U256::from(10), ..Default::default() };
+
+            for spec in MonadHardfork::ALL {
+                for chain in [&restricted, &fresh] {
+                    for delegated in [false, true] {
+                        // Sender dips below the reserve after fees.
+                        assert_parity(
+                            chain,
+                            spec,
+                            sender,
+                            &account(12, 9),
+                            delegated,
+                            1,
+                            2,
+                            vec![Step::Credit(sender, account(12, 11))],
+                        );
+                        // Sender fees exceed the reserve.
+                        assert_parity(
+                            chain,
+                            spec,
+                            sender,
+                            &account(12, 12),
+                            delegated,
+                            3,
+                            5,
+                            vec![],
+                        );
+                        // A non-sender EOA dips and is restored by a credit, then a revert.
+                        assert_parity(
+                            chain,
+                            spec,
+                            sender,
+                            &account(100, 100),
+                            delegated,
+                            0,
+                            0,
+                            vec![
+                                Step::Debit(other, account(12, 5)),
+                                Step::Credit(other, account(12, 9)),
+                                Step::Credit(other, account(12, 10)),
+                                Step::Debit(other, account(12, 1)),
+                                Step::Revert(vec![(other, account(12, 12))]),
+                            ],
+                        );
+                        // Delegated EOAs are subject accounts, contracts are not.
+                        assert_parity(
+                            chain,
+                            spec,
+                            sender,
+                            &account(100, 100),
+                            delegated,
+                            0,
+                            0,
+                            vec![
+                                Step::Debit(other, delegated_account(12, 3)),
+                                Step::Debit(STAKING_ADDRESS, account(12, 3)),
+                                Step::Debit(Address::with_last_byte(9), contract_account(12, 0)),
+                            ],
+                        );
+                    }
                 }
             }
         }
@@ -413,7 +437,7 @@ mod tests {
     #[test]
     fn rebase_updates_sender_eligibility_in_both_directions() {
         let sender = Address::with_last_byte(1);
-        let account = view(&account(12, 9));
+        let account = account(12, 9);
         let fresh_chain = MonadChainContext::default();
         let restricted_chain = MonadChainContext {
             parent_senders_and_authorities: [sender].into_iter().collect(),
@@ -440,7 +464,7 @@ mod tests {
     fn rebase_drops_accounts_absent_from_replacement_state() {
         let sender = Address::with_last_byte(1);
         let tracked = Address::with_last_byte(2);
-        let sender_account = view(&account(12, 12));
+        let sender_account = account(12, 12);
         let chain = MonadChainContext {
             parent_senders_and_authorities: [sender].into_iter().collect(),
             ..Default::default()
@@ -455,9 +479,50 @@ mod tests {
             sender_is_delegated: false,
             sender_account: Some(&sender_account),
         });
-        tracker.on_debit(Some(&view(&account(12, 9))), tracked);
+        tracker.on_debit(Some(&account(12, 9)), tracked);
         assert!(tracker.has_violation());
         tracker.rebase(&chain, |address| (address == sender).then_some(sender_account));
         assert!(!tracker.has_violation());
+    }
+
+    #[test]
+    fn credits_and_reverts_restore_reserve_thresholds() {
+        let sender = Address::with_last_byte(1);
+        let other = Address::with_last_byte(2);
+        let chain = MonadChainContext { max_reserve_balance: U256::from(10), ..Default::default() };
+        for spec in MonadHardfork::ALL {
+            let mut tracker = ReserveBalanceTracker::default();
+            tracker.init(ReserveBalanceInit {
+                chain: &chain,
+                spec,
+                sender,
+                effective_gas_price: 0,
+                gas_limit: 0,
+                sender_is_delegated: false,
+                sender_account: Some(&account(100, 100)),
+            });
+            assert!(!tracker.has_violation());
+            tracker.on_debit(Some(&account(12, 5)), other);
+            assert!(tracker.has_violation());
+            tracker.on_credit(Some(&account(12, 9)), other);
+            assert!(tracker.has_violation());
+            tracker.on_credit(Some(&account(12, 10)), other);
+            assert!(!tracker.has_violation());
+            tracker.on_debit(Some(&account(12, 1)), other);
+            assert!(tracker.has_violation());
+            tracker.on_checkpoint_revert([(other, Some(&account(12, 12)))]);
+            assert!(!tracker.has_violation());
+            tracker.on_debit(Some(&account(12, 0)), STAKING_ADDRESS);
+            assert!(!tracker.has_violation());
+            let contract = ReserveAccount {
+                code_hash: alloy_primitives::B256::repeat_byte(1),
+                ..account(12, 0)
+            };
+            tracker.on_set_code(Some(&contract), other, true);
+            assert!(!tracker.has_violation());
+            let delegated = ReserveAccount { is_delegated: true, ..contract };
+            tracker.on_set_code(Some(&delegated), other, false);
+            assert!(tracker.has_violation());
+        }
     }
 }

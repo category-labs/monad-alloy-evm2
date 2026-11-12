@@ -1,8 +1,9 @@
-//! MIP-8 pricing, rollback and transaction isolation against monad-revm 0.8.0.
+//! MIP-8 pricing, rollback and transaction isolation, with optional reference comparisons.
 
 mod common;
 
 use alloy_consensus::{TxEip2930, TxLegacy, transaction::Recovered};
+use alloy_eips::eip2930::AccessListItem;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use common::FORKS;
 use evm2::{
@@ -19,20 +20,18 @@ use monad_evm2::{
         page_index, page_offset,
     },
 };
-use monad_revm::{
-    MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,
-};
+use std::io;
+
+#[cfg(feature = "compare-monad-revm")]
+use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
+#[cfg(feature = "compare-monad-revm")]
 use revm::{
     ExecuteEvm,
     context::{BlockEnv, TxEnv},
-    context_interface::{
-        result::{ExecutionResult, HaltReason},
-        transaction::AccessListItem,
-    },
+    context_interface::result::{ExecutionResult, HaltReason},
     database::InMemoryDB as ReferenceDB,
     state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
-use std::io;
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const ROOT: Address = Address::repeat_byte(0x22);
@@ -174,72 +173,88 @@ impl Fixture {
         Run { evm, result, trace }
     }
 
-    fn compare(&self, forks: (MonadHardfork, ReferenceHardfork)) -> Run {
-        let mut db = ReferenceDB::default();
-        db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
-        for (address, code) in &self.accounts {
-            db.insert_account_info(
-                *address,
-                ReferenceAccount::default()
-                    .with_code(ReferenceBytecode::new_raw(code.original_bytes())),
-            );
-        }
-        for (address, slot, value) in &self.storage {
-            db.insert_account_storage(*address, *slot, *value).unwrap();
-        }
-        let mut reference = monad_context_with_db(db)
-            .with_cfg(MonadCfgEnv::new_with_spec(forks.1).with_chain_id(MONAD_MAINNET_CHAIN_ID))
-            .with_block(BlockEnv { basefee: 0, ..Default::default() })
-            .build_monad();
-        let mut tx = TxEnv::builder()
-            .caller(SENDER)
-            .to(ROOT)
-            .gas_limit(self.gas)
-            .gas_price(0)
-            .chain_id(None);
-        if let Some(list) = &self.access_list {
-            tx = tx.access_list(list.clone().into()).chain_id(Some(MONAD_MAINNET_CHAIN_ID));
-        }
-        let expected = reference.transact(tx.build().unwrap()).unwrap();
-        let mut actual = self.run(forks.0, true);
-        let mut plain = self.run(forks.0, false);
+    fn compare(&self, forks: MonadHardfork) -> Run {
+        let mut actual = self.run(forks, true);
+        let mut plain = self.run(forks, false);
         assert_eq!(actual.result, plain.result, "{forks:?}");
-        assert_eq!(
-            actual.result.is_success(),
-            expected.result.is_success(),
-            "{forks:?}: {:?}",
-            expected.result
-        );
-        assert_eq!(
-            actual.result.is_revert(),
-            matches!(expected.result, ExecutionResult::Revert { .. })
-        );
-        assert_eq!(
-            actual.result.total_gas_spent,
-            expected.result.gas().total_gas_spent(),
-            "{forks:?}"
-        );
-        assert_eq!(
-            actual.result.output.as_ref(),
-            expected.result.output().map_or(&[][..], Bytes::as_ref)
-        );
-        assert_eq!(actual.result.logs, expected.result.logs());
-        if let ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. } = expected.result {
-            assert!(actual.result.stop.is_out_of_gas());
-        }
-        for (address, account) in expected.state {
-            for (slot, value) in account.storage {
-                assert_eq!(
-                    actual.evm.state_mut().storage_slot_untracked(&address, &slot).unwrap(),
-                    value.present_value,
-                    "{forks:?}: {address} slot {slot}"
-                );
-                assert_eq!(
-                    plain.evm.state_mut().storage_slot_untracked(&address, &slot).unwrap(),
-                    value.present_value,
-                    "{forks:?}: uninspected {address} slot {slot}"
+        #[cfg(feature = "compare-monad-revm")]
+        {
+            let mut db = ReferenceDB::default();
+            db.insert_account_info(
+                SENDER,
+                ReferenceAccount::default().with_balance(U256::from(GAS)),
+            );
+            for (address, code) in &self.accounts {
+                db.insert_account_info(
+                    *address,
+                    ReferenceAccount::default()
+                        .with_code(ReferenceBytecode::new_raw(code.original_bytes())),
                 );
             }
+            for (address, slot, value) in &self.storage {
+                db.insert_account_storage(*address, *slot, *value).unwrap();
+            }
+            let mut reference = monad_context_with_db(db)
+                .with_cfg(
+                    MonadCfgEnv::new_with_spec(common::reference_spec(forks))
+                        .with_chain_id(MONAD_MAINNET_CHAIN_ID),
+                )
+                .with_block(BlockEnv { basefee: 0, ..Default::default() })
+                .build_monad();
+            let mut tx = TxEnv::builder()
+                .caller(SENDER)
+                .to(ROOT)
+                .gas_limit(self.gas)
+                .gas_price(0)
+                .chain_id(None);
+            if let Some(list) = &self.access_list {
+                tx = tx.access_list(list.clone().into()).chain_id(Some(MONAD_MAINNET_CHAIN_ID));
+            }
+            let expected = reference.transact(tx.build().unwrap()).unwrap();
+            assert_eq!(
+                actual.result.is_success(),
+                expected.result.is_success(),
+                "{forks:?}: {:?}",
+                expected.result
+            );
+            assert_eq!(
+                actual.result.is_revert(),
+                matches!(expected.result, ExecutionResult::Revert { .. })
+            );
+            assert_eq!(
+                actual.result.total_gas_spent,
+                expected.result.gas().total_gas_spent(),
+                "{forks:?}"
+            );
+            assert_eq!(
+                actual.result.output.as_ref(),
+                expected.result.output().map_or(&[][..], Bytes::as_ref)
+            );
+            assert_eq!(actual.result.logs, expected.result.logs());
+            if let ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. } = expected.result {
+                assert!(actual.result.stop.is_out_of_gas());
+            }
+            for (address, account) in expected.state {
+                for (slot, value) in account.storage {
+                    assert_eq!(
+                        actual.evm.state_mut().storage_slot_untracked(&address, &slot).unwrap(),
+                        value.present_value,
+                        "{forks:?}: {address} slot {slot}"
+                    );
+                    assert_eq!(
+                        plain.evm.state_mut().storage_slot_untracked(&address, &slot).unwrap(),
+                        value.present_value,
+                        "{forks:?}: uninspected {address} slot {slot}"
+                    );
+                }
+            }
+        }
+        for (address, slot, _) in &self.storage {
+            assert_eq!(
+                actual.evm.state_mut().storage_slot_untracked(address, slot).unwrap(),
+                plain.evm.state_mut().storage_slot_untracked(address, slot).unwrap(),
+                "{forks:?}: {address} slot {slot}"
+            );
         }
         actual
     }
@@ -311,7 +326,9 @@ fn page_identifiers_cover_the_full_storage_key_space() {
     ] {
         assert_eq!((page_index(slot) << PAGE_SHIFT) + page_offset(slot), slot);
         assert!(page_offset(slot) < U256::from(WORDS_PER_PAGE));
+        #[cfg(feature = "compare-monad-revm")]
         assert_eq!(page_index(slot), monad_revm::page::page_index(slot));
+        #[cfg(feature = "compare-monad-revm")]
         assert_eq!(page_offset(slot), monad_revm::page::page_offset(slot));
         assert_ne!(StoragePageKey::from_slot(ROOT, slot), StoragePageKey::from_slot(CHILD, slot));
     }
@@ -333,7 +350,7 @@ fn reads_warm_pages_only_from_monad_ten() {
     }
     for forks in FORKS {
         let run = Fixture::new(code.clone()).compare(forks);
-        let expected = if forks.0 >= MonadHardfork::MonadTen {
+        let expected = if forks >= MonadHardfork::MonadTen {
             vec![8_100, 100, 8_100, 100, 8_100, 100]
         } else {
             vec![8_100; 6]
@@ -352,7 +369,7 @@ fn unchanged_writes_only_warm_the_page() {
     read(&mut code, U256::from(127));
     for forks in FORKS {
         let run = Fixture::new(code.clone()).compare(forks);
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [8_100, 19_900, 100, 100, 100]);
         }
     }
@@ -366,7 +383,7 @@ fn growth_charges_the_page_high_water_mark_without_refunds() {
     }
     for forks in FORKS {
         let run = Fixture::new(code.clone()).compare(forks);
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [27_900, 17_100, 100, 100, 100, 100, 17_100]);
         }
     }
@@ -382,7 +399,7 @@ fn clearing_existing_slots_offsets_growth_only_within_the_same_page() {
     fixture.storage = vec![(ROOT, U256::ZERO, U256::ONE), (ROOT, U256::ONE, U256::ONE)];
     for forks in FORKS {
         let run = fixture.compare(forks);
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [10_900, 100, 100, 100, 27_900, 17_100]);
         }
     }
@@ -403,7 +420,7 @@ fn growth_counters_cover_all_128_slots_in_both_directions() {
         }
         for forks in FORKS {
             let run = fixture.compare(forks);
-            if forks.0 >= MonadHardfork::MonadTen {
+            if forks >= MonadHardfork::MonadTen {
                 let costs = run.trace.costs();
                 assert_eq!(costs[0], if initially_full { 10_900 } else { 27_900 });
                 assert!(
@@ -428,7 +445,7 @@ fn access_lists_warm_whole_pages_but_still_charge_each_listed_key() {
     fixture.warm(ROOT, &[3]);
     for forks in FORKS {
         let run = fixture.compare(forks);
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [100, 19_900, 27_900]);
             // Two address entries, four storage keys, and 17 gas for PUSH/POP.
             assert_eq!(
@@ -454,7 +471,7 @@ fn reads_and_growth_are_isolated_by_storage_context() {
         fixture.storage.push((ROOT, U256::ZERO, U256::ONE));
         for forks in FORKS {
             let run = fixture.compare(forks);
-            if forks.0 >= MonadHardfork::MonadTen {
+            if forks >= MonadHardfork::MonadTen {
                 assert_eq!(
                     run.trace.costs(),
                     if opcode == op::CALL {
@@ -484,7 +501,7 @@ fn nested_calls_commit_or_revert_every_page_field() {
             fixture.contract(CHILD, child);
             for forks in FORKS {
                 let run = fixture.compare(forks);
-                if forks.0 >= MonadHardfork::MonadTen {
+                if forks >= MonadHardfork::MonadTen {
                     assert_eq!(
                         run.trace.costs(),
                         if stop == op::STOP {
@@ -518,7 +535,7 @@ fn ancestor_revert_undoes_successful_grandchildren_but_preserves_access_lists() 
         }
         for forks in FORKS {
             let run = fixture.compare(forks);
-            if forks.0 >= MonadHardfork::MonadTen {
+            if forks >= MonadHardfork::MonadTen {
                 assert_eq!(run.trace.costs(), [if warm { 19_900 } else { 27_900 }; 2]);
             }
         }
@@ -576,7 +593,7 @@ fn failed_code_deposit_reverts_initcode_page_accounting() {
             run.evm.state_mut().storage_slot_untracked(&created, &U256::ZERO).unwrap(),
             U256::ZERO
         );
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [27_900; 2]);
         }
     }
@@ -682,7 +699,7 @@ fn contract_transient_storage_cannot_modify_page_bookkeeping() {
     for forks in FORKS {
         let run = Fixture::new(code.clone()).compare(forks);
         assert_eq!(run.result.output, Bytes::from(vec![0; 32]));
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [8_100, 100]);
         }
     }
@@ -706,7 +723,7 @@ fn reverted_clears_cannot_subsidize_subsequent_growth() {
             fixture.storage.push((ROOT, U256::ZERO, U256::ONE));
             for forks in FORKS {
                 let run = fixture.compare(forks);
-                if forks.0 >= MonadHardfork::MonadTen {
+                if forks >= MonadHardfork::MonadTen {
                     let final_cost = if stop == op::STOP {
                         100
                     } else if prewarm {
@@ -764,7 +781,7 @@ fn code_at_the_tracker_address_cannot_execute_as_a_contract() {
     for forks in FORKS {
         let run = fixture.compare(forks);
         assert!(run.trace.children[0].is_success());
-        if forks.0 >= MonadHardfork::MonadTen {
+        if forks >= MonadHardfork::MonadTen {
             assert_eq!(run.trace.costs(), [8_100, 100]);
         }
     }

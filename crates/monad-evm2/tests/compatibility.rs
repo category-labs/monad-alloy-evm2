@@ -1,11 +1,11 @@
 //! Configuration compatibility with the published monad-revm 0.8.0 release.
 
+#![cfg(feature = "compare-monad-revm")]
+
 mod common;
 
-use common::FORKS;
-use evm2::{
-    BaseEvmTypes, EvmFeatures, OpcodeConfig, SpecId, Version, interpreter::op, version::GasId,
-};
+use common::{FORKS as MONAD_FORKS, reference_spec};
+use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 use monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_MAX_CODE_SIZE, MONAD_MAX_INITCODE_SIZE, MONAD_MEMORY_LIMIT,
     MONAD_TESTNET_CHAIN_ID, MONAD_TX_GAS_LIMIT_CAP, MonadHardfork, MonadLimits,
@@ -20,10 +20,10 @@ use revm::{
 #[test]
 fn identifiers_names_and_ordering_match_release() {
     assert_eq!(MonadHardfork::default() as u8, ReferenceHardfork::default() as u8);
-    assert_eq!(MonadHardfork::ALL, FORKS.map(|(ours, _)| ours));
+    assert_eq!(MonadHardfork::ALL, MONAD_FORKS);
     assert_eq!(core::mem::size_of::<MonadHardfork>(), 1);
 
-    for (ours, reference) in FORKS {
+    for (ours, reference) in forks() {
         assert_eq!(ours as u8, reference as u8);
         let name: &str = ours.into();
         assert_eq!(name, reference.to_string());
@@ -41,7 +41,7 @@ fn identifiers_names_and_ordering_match_release() {
         assert_eq!(ours.into_eth_spec(), expected_base);
         assert_eq!(SpecId::from(ours), expected_base);
 
-        for (active, reference_active) in FORKS {
+        for (active, reference_active) in forks() {
             assert_eq!(ours.is_enabled_in(active), reference.is_enabled_in(reference_active));
             assert_eq!(ours.cmp(&active), reference.cmp(&reference_active));
         }
@@ -51,8 +51,8 @@ fn identifiers_names_and_ordering_match_release() {
 #[test]
 fn unknown_identifiers_are_rejected() {
     for raw in u8::MIN..=u8::MAX {
-        let expected = FORKS.iter().find(|(_, reference)| *reference as u8 == raw);
-        assert_eq!(MonadHardfork::try_from_u8(raw), expected.map(|(ours, _)| *ours));
+        let expected = forks().into_iter().find(|(_, reference)| *reference as u8 == raw);
+        assert_eq!(MonadHardfork::try_from_u8(raw), expected.map(|(ours, _)| ours));
     }
     for name in ["", "MonadSeven", "Prague", "100", " MonadNine", "MonadTen ", "monad-nine"] {
         assert!(name.parse::<ReferenceHardfork>().is_err());
@@ -67,7 +67,7 @@ fn schedules_match_release_at_every_boundary() {
 
     for chain_id in [MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID] {
         let mut timestamps = vec![0, u64::MAX];
-        for (ours, reference) in FORKS {
+        for (ours, reference) in forks() {
             let (actual, expected) = if chain_id == MONAD_MAINNET_CHAIN_ID {
                 (ours.mainnet_activation_timestamp(), reference.mainnet_activation_timestamp())
             } else {
@@ -157,7 +157,7 @@ fn dynamic_gas_params_match_release() {
     for (index, (id, _)) in GAS_IDS.iter().enumerate() {
         assert_eq!(id.as_usize(), index, "missing or repeated gas parameter");
     }
-    for (ours, reference) in FORKS {
+    for (ours, reference) in forks() {
         let params = monad_gas_params(ours);
         let expected = monad_revm::instructions::monad_gas_params(reference);
         for &(id, reference_id) in GAS_IDS {
@@ -174,7 +174,7 @@ fn default_limits_match_release() {
     assert_eq!(MONAD_MAX_INITCODE_SIZE, monad_revm::cfg::MONAD_MAX_INITCODE_SIZE);
     assert_eq!(MONAD_MEMORY_LIMIT, monad_revm::cfg::MONAD_MEMORY_LIMIT);
 
-    for (spec, reference) in FORKS {
+    for (spec, reference) in forks() {
         for chain_id in [MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, 0, u64::MAX] {
             let version = monad_version(spec, chain_id);
             let cfg = MonadCfgEnv::new_with_spec(reference).with_chain_id(chain_id);
@@ -202,25 +202,8 @@ fn default_limits_match_release() {
 }
 
 #[test]
-fn inherited_opcodes_follow_mip5_without_enabling_amsterdam() {
-    for spec in MonadHardfork::ALL {
-        let opcodes = OpcodeConfig::<BaseEvmTypes>::base_for_spec(spec.into_eth_spec());
-        // MIP-5 activates CLZ at MonadNine; blob opcodes predate it despite blob
-        // transactions being unsupported. C++ MonadTraits gates these separately.
-        assert_eq!(opcodes.is_defined(op::CLZ), spec != MonadHardfork::MonadEight, "{spec}");
-        for opcode in [op::BLOBHASH, op::BLOBBASEFEE] {
-            assert!(opcodes.is_defined(opcode), "{spec} opcode {opcode:#x}");
-        }
-        // MonadNext follows the published Rust release, not C++ MONAD_NEXT.
-        for opcode in [op::DUPN, op::SWAPN, op::EXCHANGE, op::SLOTNUM] {
-            assert!(!opcodes.is_defined(opcode), "{spec} opcode {opcode:#x}");
-        }
-    }
-}
-
-#[test]
 fn explicit_limits_match_release_including_zero_and_overflow() {
-    for (spec, reference) in FORKS {
+    for (spec, reference) in forks() {
         for gas_cap in [None, Some(0), Some(12_345_678), Some(u64::MAX)] {
             for code_size in [None, Some(0), Some(100_000), Some(usize::MAX)] {
                 for initcode_size in [None, Some(0), Some(300_000), Some(usize::MAX)] {
@@ -260,7 +243,7 @@ fn memory_limits_survive_hardfork_changes() {
         let limits = MonadLimits { memory_limit: Some(configured), ..Default::default() };
         let mut cfg = MonadCfgEnv::new();
         cfg.0.memory_limit = configured;
-        for (spec, reference) in FORKS.into_iter().chain(FORKS.into_iter().rev()) {
+        for (spec, reference) in forks().into_iter().chain(forks().into_iter().rev()) {
             cfg.0.spec = reference;
             let version = limits.version(spec, MONAD_MAINNET_CHAIN_ID);
             assert_eq!(version.memory_limit, cfg.memory_limit(), "{spec} configured {configured}");
@@ -270,26 +253,6 @@ fn memory_limits_survive_hardfork_changes() {
     }
 }
 
-#[test]
-#[cfg(feature = "serde")]
-fn serde_round_trips_hardforks_and_requested_limits() {
-    for spec in MonadHardfork::ALL {
-        let json = serde_json::to_string(&spec).unwrap();
-        assert_eq!(json, format!("\"{spec}\""));
-        assert_eq!(serde_json::from_str::<MonadHardfork>(&json).unwrap(), spec);
-    }
-    assert!(serde_json::from_str::<MonadHardfork>("\"MonadSeven\"").is_err());
-
-    for limits in [
-        MonadLimits::default(),
-        MonadLimits {
-            tx_gas_limit_cap: Some(u64::MAX),
-            max_code_size: Some(usize::MAX),
-            max_initcode_size: Some(0),
-            memory_limit: Some(128 * 1024 * 1024),
-        },
-    ] {
-        let json = serde_json::to_string(&limits).unwrap();
-        assert_eq!(serde_json::from_str::<MonadLimits>(&json).unwrap(), limits);
-    }
+fn forks() -> [(MonadHardfork, ReferenceHardfork); 4] {
+    MONAD_FORKS.map(|spec| (spec, reference_spec(spec)))
 }

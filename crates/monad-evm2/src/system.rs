@@ -183,30 +183,48 @@ fn commit_successful_syscall(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::address;
 
     #[test]
-    fn calldata_matches_monad_revm() {
+    fn calldata_and_system_transaction_match_protocol() {
         let author = Address::new([0xAB; 20]);
         for reward in [U256::ZERO, U256::from(1_000_000_000_000_000_000u128), U256::MAX] {
+            let mut expected = [0u8; 68];
+            expected[..4].copy_from_slice(&[0x79, 0x1b, 0xdc, 0xf3]);
+            expected[16..36].copy_from_slice(author.as_slice());
+            expected[36..].copy_from_slice(&reward.to_be_bytes::<32>());
+            assert_eq!(syscall_reward_calldata(author, reward).as_ref(), expected);
+            #[cfg(feature = "compare-monad-revm")]
             assert_eq!(
                 syscall_reward_calldata(author, reward),
                 monad_revm::api::block::syscall_reward_calldata(author, reward)
             );
         }
         assert_eq!(syscall_reward_calldata(author, U256::ZERO).len(), 68);
+        assert_eq!(syscall_snapshot_calldata().as_ref(), &[0x15, 0x7e, 0xeb, 0x21]);
+        #[cfg(feature = "compare-monad-revm")]
         assert_eq!(
             syscall_snapshot_calldata(),
             monad_revm::api::block::syscall_snapshot_calldata()
         );
         for epoch in [0, 42, u64::MAX] {
+            let mut expected = [0u8; 36];
+            expected[..4].copy_from_slice(&[0x1d, 0x4e, 0x9f, 0x02]);
+            expected[28..].copy_from_slice(&epoch.to_be_bytes());
+            assert_eq!(syscall_on_epoch_change_calldata(epoch).as_ref(), expected);
+            #[cfg(feature = "compare-monad-revm")]
             assert_eq!(
                 syscall_on_epoch_change_calldata(epoch),
                 monad_revm::api::block::syscall_on_epoch_change_calldata(epoch)
             );
         }
         let tx = syscall_snapshot_tx();
+        #[cfg(feature = "compare-monad-revm")]
         assert_eq!(tx.caller, monad_revm::staking::constants::SYSTEM_ADDRESS);
+        #[cfg(feature = "compare-monad-revm")]
         assert_eq!(tx.system_contract_address, monad_revm::staking::STAKING_ADDRESS);
+        assert_eq!(tx.caller, address!("6f49a8f621353f12378d0046e7d7e4b9b249dc9e"));
+        assert_eq!(tx.system_contract_address, Address::from_word(U256::from(0x1000).into()));
         assert_eq!(tx.gas_limit, 30_000_000);
     }
 }

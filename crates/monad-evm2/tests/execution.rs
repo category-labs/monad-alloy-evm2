@@ -1,4 +1,4 @@
-//! Contract execution against the published monad-revm 0.8.0 release.
+//! Contract execution with independent expectations and optional reference comparisons.
 
 mod common;
 
@@ -16,13 +16,14 @@ use monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes,
     MonadHardfork, MonadTxEnvelope,
 };
-use monad_revm::{
-    MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,
-};
+
+#[cfg(feature = "compare-monad-revm")]
+use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
+#[cfg(feature = "compare-monad-revm")]
 use revm::{
     ExecuteEvm,
     context::{BlockEnv, TxEnv},
-    context_interface::result::{ExecutionResult, HaltReason, Output},
+    context_interface::result::{ExecutionResult, HaltReason},
     database::InMemoryDB as ReferenceDB,
     state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
@@ -56,60 +57,74 @@ fn evm2_db(code: Bytes) -> InMemoryDB {
 }
 
 fn run_contract(
-    (spec, reference_spec): (MonadHardfork, ReferenceHardfork),
+    spec: MonadHardfork,
     chain_id: u64,
     code: &'static [u8],
-) -> (TxResult<MonadEvmTypes>, ExecutionResult) {
+) -> TxResult<MonadEvmTypes> {
     let code = Bytes::from_static(code);
     let tx = legacy_call(100_000);
     let number = U256::from(BLOCK_NUMBER);
 
-    let mut db = ReferenceDB::default();
-    db.insert_account_info(
-        CALLER,
-        ReferenceAccount::default().with_balance(CALLER_BALANCE).with_nonce(CALLER_NONCE),
-    );
-    db.insert_account_info(
-        CONTRACT,
-        ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
-    );
-    let mut reference = monad_context_with_db(db)
-        .with_cfg(MonadCfgEnv::new_with_spec(reference_spec).with_chain_id(chain_id))
-        .with_block(BlockEnv { number, ..Default::default() })
-        .build_monad();
-    let reference_tx = TxEnv::builder()
-        .caller(CALLER)
-        .nonce(tx.nonce)
-        .kind(tx.to)
-        .gas_limit(tx.gas_limit)
-        .gas_price(tx.gas_price)
-        .chain_id(tx.chain_id)
-        .value(tx.value)
-        .data(tx.input.clone())
-        .build()
-        .unwrap();
-    let expected = reference.transact(reference_tx).unwrap().result;
+    #[cfg(feature = "compare-monad-revm")]
+    let expected = {
+        let mut db = ReferenceDB::default();
+        db.insert_account_info(
+            CALLER,
+            ReferenceAccount::default().with_balance(CALLER_BALANCE).with_nonce(CALLER_NONCE),
+        );
+        db.insert_account_info(
+            CONTRACT,
+            ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
+        );
+        let mut reference = monad_context_with_db(db)
+            .with_cfg(
+                MonadCfgEnv::new_with_spec(common::reference_spec(spec)).with_chain_id(chain_id),
+            )
+            .with_block(BlockEnv { number, ..Default::default() })
+            .build_monad();
+        let reference_tx = TxEnv::builder()
+            .caller(CALLER)
+            .nonce(tx.nonce)
+            .kind(tx.to)
+            .gas_limit(tx.gas_limit)
+            .gas_price(tx.gas_price)
+            .chain_id(tx.chain_id)
+            .value(tx.value)
+            .data(tx.input.clone())
+            .build()
+            .unwrap();
+        reference.transact(reference_tx).unwrap().result
+    };
 
     let block = MonadBlockEnv { number, ..Default::default() };
     let mut evm = MonadEvmBuilder::new(chain_id).create_evm(spec, block, evm2_db(code));
     assert_eq!(evm.config_spec_id(), spec);
     assert_eq!(evm.spec_id(), spec.into_eth_spec());
     let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), CALLER);
-    (evm.call_tx(&envelope).unwrap(), expected)
+    let actual = evm.call_tx(&envelope).unwrap();
+    #[cfg(feature = "compare-monad-revm")]
+    {
+        assert_eq!(actual.is_success(), expected.is_success());
+        assert_eq!(actual.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
+        assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
+        if actual.stop == InstrStop::NotActivated {
+            assert!(matches!(
+                expected,
+                ExecutionResult::Halt { reason: HaltReason::NotActivated, .. }
+            ));
+        }
+    }
+    actual
 }
 
-fn assert_returns((actual, reference): (TxResult<MonadEvmTypes>, ExecutionResult), word: U256) {
-    let ExecutionResult::Success { output: Output::Call(bytes), .. } = reference else {
-        panic!("expected a successful reference call, got {reference:?}");
-    };
+fn assert_returns(actual: TxResult<MonadEvmTypes>, word: U256) {
     assert!(actual.status);
     assert_eq!(actual.stop, InstrStop::Return);
-    assert_eq!(actual.output, bytes);
-    assert_eq!(bytes.as_ref(), word.to_be_bytes::<32>());
+    assert_eq!(actual.output.as_ref(), word.to_be_bytes::<32>());
 }
 
 #[test]
-fn chainid_matches_release_on_mainnet_and_testnet() {
+fn chainid_uses_mainnet_and_testnet_configuration() {
     const CODE: &[u8] = &[op::CHAINID, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN];
     for forks in FORKS {
         for chain_id in [MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID] {
@@ -119,21 +134,18 @@ fn chainid_matches_release_on_mainnet_and_testnet() {
 }
 
 #[test]
-fn clz_activates_at_monad_nine_in_both_engines() {
+fn clz_activates_at_monad_nine() {
     const CODE: &[u8] =
         &[op::NUMBER, op::CLZ, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN];
     for forks in FORKS {
-        let (actual, reference) = run_contract(forks, MONAD_MAINNET_CHAIN_ID, CODE);
-        if forks.0 == MonadHardfork::MonadEight {
+        let actual = run_contract(forks, MONAD_MAINNET_CHAIN_ID, CODE);
+        if forks == MonadHardfork::MonadEight {
             assert!(!actual.status);
             assert_eq!(actual.stop, InstrStop::NotActivated);
-            assert!(matches!(
-                reference,
-                ExecutionResult::Halt { reason: HaltReason::NotActivated, .. }
-            ));
+            assert_eq!(actual.total_gas_spent, 100_000);
         } else {
             // Block number 256 has 247 leading zero bits in an EVM word.
-            assert_returns((actual, reference), U256::from(247));
+            assert_returns(actual, U256::from(247));
         }
     }
 }

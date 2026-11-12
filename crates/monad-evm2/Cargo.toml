@@ -22,9 +22,12 @@ evm2-macros.workspace = true
 # serde
 serde = { workspace = true, optional = true }
 
+# compare-monad-revm
+monad-revm = { workspace = true, optional = true, features = ["std", "memory_limit"] }
+revm = { workspace = true, optional = true, features = ["std"] }
+
 [dev-dependencies]
-monad-revm = { workspace = true, features = ["std", "memory_limit"] }
-revm = { workspace = true, features = ["std"] }
+alloy-eips.workspace = true
 serde_json.workspace = true
 
 [features]
@@ -37,6 +40,8 @@ portable = ["evm2/portable"]
 blst = ["evm2/blst"]
 # Compatibility with callers that previously enabled memory limits explicitly.
 memory_limit = []
+# Optional reference engine for differential tests.
+compare-monad-revm = ["dep:monad-revm", "dep:revm"]
 
 [lints]
 workspace = true

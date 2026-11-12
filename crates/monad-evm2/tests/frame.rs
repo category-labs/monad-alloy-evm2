@@ -1,10 +1,11 @@
-//! Per-frame fork selection against monad-revm 0.8.0.
+//! Per-frame fork selection with optional reference comparisons.
 
+#[cfg(feature = "compare-monad-revm")]
 mod common;
 
 use alloy_consensus::{TxEip2930, TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use common::FORKS;
+use alloy_eips::eip2930::AccessListItem;
+use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::{
     AccountInfo, ExecutionConfig, ExecutionError, Inspector, OpcodeConfig, SpecId, TxResult,
     bytecode::Bytecode,
@@ -17,29 +18,29 @@ use monad_evm2::{
     MonadBlockEnv, MonadEvm, MonadEvmBuilder, MonadEvmTypes, MonadHardfork, MonadTxEnvelope,
     frame_hardfork, monad_version,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+#[cfg(feature = "compare-monad-revm")]
+use alloy_primitives::TxKind;
+#[cfg(feature = "compare-monad-revm")]
 use monad_revm::{
-    MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, api::default_ctx::MonadContext,
-    monad_context_with_db,
+    MonadBuilder, MonadCfgEnv, api::default_ctx::MonadContext, monad_context_with_db,
 };
+#[cfg(feature = "compare-monad-revm")]
 use revm::{
     InspectEvm,
     context::{BlockEnv, TxEnv},
-    context_interface::{result::ExecutionResult, transaction::AccessListItem},
+    context_interface::result::ExecutionResult,
     database::InMemoryDB as ReferenceDB,
     interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome},
     state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const ROOT: Address = Address::repeat_byte(0x22);
 const CHILD: Address = Address::repeat_byte(0x33);
 const GRANDCHILD: Address = Address::repeat_byte(0x44);
 const GAS: u64 = 2_000_000;
-
-fn reference_spec(spec: MonadHardfork) -> ReferenceHardfork {
-    FORKS.into_iter().find(|(fork, _)| *fork == spec).unwrap().1
-}
 
 struct Selector {
     root: MonadHardfork,
@@ -122,12 +123,14 @@ impl Inspector<MonadEvmTypes> for Selector {
     }
 }
 
+#[cfg(feature = "compare-monad-revm")]
 struct ReferenceSelector {
     root: MonadHardfork,
     child: MonadHardfork,
     grandchild: Option<MonadHardfork>,
 }
 
+#[cfg(feature = "compare-monad-revm")]
 impl revm::Inspector<MonadContext<ReferenceDB>> for ReferenceSelector {
     fn call(
         &mut self,
@@ -141,7 +144,7 @@ impl revm::Inspector<MonadContext<ReferenceDB>> for ReferenceSelector {
         } else {
             self.child
         };
-        context.cfg = MonadCfgEnv::new_with_spec(reference_spec(spec));
+        context.cfg = MonadCfgEnv::new_with_spec(common::reference_spec(spec));
         None
     }
     fn create(
@@ -149,7 +152,7 @@ impl revm::Inspector<MonadContext<ReferenceDB>> for ReferenceSelector {
         context: &mut MonadContext<ReferenceDB>,
         _: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
-        context.cfg = MonadCfgEnv::new_with_spec(reference_spec(self.child));
+        context.cfg = MonadCfgEnv::new_with_spec(common::reference_spec(self.child));
         None
     }
 }
@@ -208,6 +211,8 @@ fn compare_with_warmth(
     actual.set_block(MonadBlockEnv { beneficiary, ..Default::default() });
     let mut selector = Selector::new(root, child);
     selector.grandchild = grandchild;
+    #[cfg(feature = "compare-monad-revm")]
+    let reference_access_list = access_list.clone();
     let transaction = if access_list.is_empty() {
         tx()
     } else {
@@ -216,44 +221,47 @@ fn compare_with_warmth(
                 chain_id: 1,
                 to: ROOT.into(),
                 gas_limit: GAS,
-                access_list: access_list.clone().into(),
+                access_list: access_list.into(),
                 ..Default::default()
             }),
             SENDER,
         )
     };
     let result = actual.transact_with_inspector(&transaction, &mut selector).unwrap().commit();
-    let mut db = ReferenceDB::default();
-    db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
-    for (address, code) in accounts {
-        db.insert_account_info(
-            *address,
-            ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
+    #[cfg(feature = "compare-monad-revm")]
+    {
+        let mut db = ReferenceDB::default();
+        db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
+        for (address, code) in accounts {
+            db.insert_account_info(
+                *address,
+                ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
+            );
+        }
+        let mut reference = monad_context_with_db(db)
+            .with_cfg(MonadCfgEnv::new_with_spec(common::reference_spec(root)).with_chain_id(1))
+            .with_block(BlockEnv { beneficiary, basefee: 0, ..Default::default() })
+            .build_monad_with_inspector(ReferenceSelector { root, child, grandchild });
+        let expected = reference
+            .inspect_one_tx(
+                TxEnv::builder()
+                    .caller(SENDER)
+                    .kind(TxKind::Call(ROOT))
+                    .gas_limit(GAS)
+                    .gas_price(0)
+                    .access_list(reference_access_list.into())
+                    .build_fill(),
+            )
+            .unwrap();
+        assert_eq!(result.is_success(), expected.is_success(), "{root} -> {child}: {expected:?}");
+        assert_eq!(
+            result.output.as_ref(),
+            expected.output().map_or(&[][..], |bytes| bytes.as_ref()),
+            "{root} -> {child}"
         );
-    }
-    let mut reference = monad_context_with_db(db)
-        .with_cfg(MonadCfgEnv::new_with_spec(reference_spec(root)).with_chain_id(1))
-        .with_block(BlockEnv { beneficiary, basefee: 0, ..Default::default() })
-        .build_monad_with_inspector(ReferenceSelector { root, child, grandchild });
-    let expected = reference
-        .inspect_one_tx(
-            TxEnv::builder()
-                .caller(SENDER)
-                .kind(TxKind::Call(ROOT))
-                .gas_limit(GAS)
-                .gas_price(0)
-                .access_list(access_list.into())
-                .build_fill(),
-        )
-        .unwrap();
-    assert_eq!(result.is_success(), expected.is_success(), "{root} -> {child}: {expected:?}");
-    assert_eq!(
-        result.output.as_ref(),
-        expected.output().map_or(&[][..], |bytes| bytes.as_ref()),
-        "{root} -> {child}"
-    );
-    if matches!(expected, ExecutionResult::Success { .. }) {
-        assert_eq!(result.logs, *expected.logs());
+        if matches!(expected, ExecutionResult::Success { .. }) {
+            assert_eq!(result.logs, *expected.logs());
+        }
     }
     assert_eq!(frame_hardfork(&actual), root);
     assert_eq!(actual.ext().memory_pool_offset(), 0);

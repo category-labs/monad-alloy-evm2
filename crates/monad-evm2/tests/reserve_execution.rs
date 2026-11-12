@@ -1,6 +1,7 @@
 //! Reserve tracking across transaction boundaries, native rollbacks and query calls.
 
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     AccountInfo, ExecutionError, Inspector,
@@ -19,7 +20,6 @@ use monad_evm2::{
         run_reserve_balance_precompile,
     },
 };
-use revm::context_interface::transaction::{Authorization, SignedAuthorization};
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const TARGET: Address = Address::repeat_byte(0x22);
