@@ -58,12 +58,41 @@ class FixtureGateTests(unittest.TestCase):
         }
 
     def check(self, report=None, exit_code=1):
-        fixture_ci.check_report(self.report if report is None else report, self.root, self.expected, exit_code)
+        fixture_ci.check_report(self.report if report is None else report, self.root, self.expected, exit_code, compare_monad_revm=True)
 
     def test_accepts_exact_results_without_rewriting_failures(self):
         original = copy.deepcopy(self.report)
         self.check()
         self.assertEqual(original, self.report)
+
+    def independent_report(self):
+        report = copy.deepcopy(self.report)
+        report["verification"] = "valid_block_execution"
+        for counter in ("parity_checks", "parity_differences", "corrected_reference_receipts"):
+            report["summary"][counter] = 0
+        for case in report["cases"]:
+            case["parity"] = {"checks": 0, "corrected_receipts": 0, "differences": []}
+        return report
+
+    def test_independent_mode_keeps_fixture_outcomes_and_requires_zero_comparisons(self):
+        report = self.independent_report()
+        original = copy.deepcopy(report)
+        fixture_ci.check_report(report, self.root, self.expected, 1)
+        self.assertEqual(report, original)
+        for change in ("status", "comparison", "verification"):
+            changed = copy.deepcopy(report)
+            if change == "status":
+                changed["cases"][1]["status"] = "passed"
+            elif change == "comparison":
+                changed["cases"][0]["parity"]["checks"] = 1
+            else:
+                changed["verification"] = "valid_block_execution_and_reference_parity"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                fixture_ci.check_report(changed, self.root, self.expected, 1)
+
+    def test_comparison_mode_rejects_a_runner_built_without_the_feature(self):
+        with self.assertRaises(ValueError):
+            self.check(self.independent_report())
 
     def test_rejects_missing_extra_duplicate_and_substituted_cases(self):
         variants = [[], self.report["cases"][:1], self.report["cases"] * 2]
@@ -165,7 +194,7 @@ class FixtureGateTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                code = fixture_ci.main(["--runner", "runner", "--fixtures", str(fixtures), "--report", str(output)])
+                code = fixture_ci.main(["--runner", "runner", "--fixtures", str(fixtures), "--report", str(output), "--compare-monad-revm"])
             self.assertEqual(code, 0 if passes else 1)
             self.assertEqual(json.loads(output.read_text()), report)
             self.assertIn("Fixture gate passed" if passes else "Fixture gate failed", summary.read_text())

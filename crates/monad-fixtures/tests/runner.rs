@@ -446,6 +446,7 @@ fn enforces_reserves_with_current_and_historical_senders() {
     }
 }
 
+#[cfg(feature = "compare-monad-revm")]
 #[test]
 fn keeps_reference_differences_visible_when_fixture_assertions_pass() {
     let case = reserve_fixture("MONAD_NINE", 1_000_000, 3, &[&[true], &[false]]);
@@ -477,12 +478,15 @@ fn keeps_reference_differences_visible_when_fixture_assertions_pass() {
 }
 
 #[test]
-fn compares_consumed_gas_and_reports_reference_receipt_corrections() {
+fn receipts_charge_the_full_limit_independently_of_consumption() {
     let report = check(transfer());
     assert_eq!(report.exit_code(true), 0);
-    assert_eq!(report.summary.parity_checks, 1);
+    assert_eq!(report.summary.parity_checks, usize::from(cfg!(feature = "compare-monad-revm")));
     assert_eq!(report.summary.parity_differences, 0);
-    assert_eq!(report.summary.corrected_reference_receipts, 1);
+    assert_eq!(
+        report.summary.corrected_reference_receipts,
+        usize::from(cfg!(feature = "compare-monad-revm"))
+    );
     // The fixture independently requires a 50,000-gas receipt and its full fee,
     // while both engines consume only 21,000 gas for this transfer.
     let mut bad = transfer();
@@ -574,7 +578,7 @@ fn applies_system_calls_in_empty_blocks() {
     case["postState"] = post;
     let report = check(case);
     assert_eq!(report.cases[0].status, Status::Passed, "{report:?}");
-    assert_eq!(report.summary.parity_checks, 4);
+    assert_eq!(report.summary.parity_checks, 4 * usize::from(cfg!(feature = "compare-monad-revm")));
     assert_eq!(report.exit_code(true), 0, "{report:?}");
 }
 
@@ -676,7 +680,7 @@ fn discovers_deduplicates_filters_and_continues_after_bad_files() {
     let report = run(&[dir.path().to_owned(), fixture_file], None).unwrap();
     assert_eq!(
         serde_json::to_value(&report.summary).unwrap(),
-        json!({"total": 3, "passed": 1, "failed": 1, "unsupported": 1, "parity_checks": 1, "parity_differences": 0, "corrected_reference_receipts": 1})
+        json!({"total": 3, "passed": 1, "failed": 1, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))})
     );
     assert_eq!(report.cases[0].name, "<file>");
     assert_eq!(report.cases[1].name, "pass");
@@ -708,10 +712,10 @@ fn cli_json_schema_and_exit_codes() {
         assert_eq!(
             actual,
             json!({
-                "schema_version": 1, "verification": "valid_block_execution_and_reference_parity",
-                "summary": {"total": 2, "passed": 1, "failed": 0, "unsupported": 1, "parity_checks": 1, "parity_differences": 0, "corrected_reference_receipts": 1},
+                "schema_version": 1, "verification": if cfg!(feature = "compare-monad-revm") { "valid_block_execution_and_reference_parity" } else { "valid_block_execution" },
+                "summary": {"total": 2, "passed": 1, "failed": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))},
                 "cases": [
-                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "parity": {"checks": 1, "corrected_receipts": 1, "differences": []}},
+                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "parity": {"checks": usize::from(cfg!(feature = "compare-monad-revm")), "corrected_receipts": usize::from(cfg!(feature = "compare-monad-revm")), "differences": []}},
                     {"file": file.canonicalize().unwrap(), "name": "unsupported", "network": "MONAD_EIGHT", "status": "unsupported", "message": "invalid-block expectations require consensus validation and exact error matching", "parity": {"checks": 0, "corrected_receipts": 0, "differences": []}},
                 ],
             })

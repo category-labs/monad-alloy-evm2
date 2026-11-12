@@ -1,4 +1,4 @@
-"""Check the pinned fixture corpus and exact, documented reference differences."""
+"""Check the pinned fixture corpus and optional, documented reference differences."""
 
 import argparse
 import hashlib
@@ -32,10 +32,15 @@ def inventory(root):
     return result
 
 
-def check_report(report, root, expected, runner_exit_code):
+def check_report(report, root, expected, runner_exit_code, compare_monad_revm=False):
     """Reject missing coverage, new differences and any changed known outcome."""
-    if not isinstance(report, dict) or report.get("schema_version") != 1 or report.get("verification") != (
-        "valid_block_execution_and_reference_parity"
+    verification = (
+        "valid_block_execution_and_reference_parity" if compare_monad_revm else "valid_block_execution"
+    )
+    if (
+        not isinstance(report, dict)
+        or report.get("schema_version") != 1
+        or report.get("verification") != verification
     ):
         raise ValueError("unsupported fixture report schema or verification scope")
     cases = report.get("cases")
@@ -72,7 +77,10 @@ def check_report(report, root, expected, runner_exit_code):
         if not isinstance(observed, list) or len(observed) > checks or corrections > checks:
             raise ValueError(f"inconsistent parity counters: {key}")
         known_difference = differences.get(key)
-        if known_difference:
+        if not compare_monad_revm:
+            if checks != 0 or corrections != 0 or observed:
+                raise ValueError(f"unexpected reference comparison in independent mode: {key}")
+        elif known_difference:
             for item in observed:
                 actual, reference = item["actual"], item["reference"]
                 if item["reference_error"] is not None or reference is None:
@@ -100,10 +108,15 @@ def check_report(report, root, expected, runner_exit_code):
         raise ValueError("fixture results are incomplete or empty")
     if not failures.keys() <= seen or not differences.keys() <= seen:
         raise ValueError("known fixture identities are missing")
-    if report.get("summary") != totals or totals != expected["summary"]:
+    expected_summary = expected["summary"].copy()
+    if not compare_monad_revm:
+        for counter in ("parity_checks", "parity_differences", "corrected_reference_receipts"):
+            expected_summary[counter] = 0
+    if report.get("summary") != totals or totals != expected_summary:
         raise ValueError(f"unexpected fixture totals: {totals}")
-    if runner_exit_code != 1:
-        raise ValueError(f"runner exited {runner_exit_code}; expected 1 for visible differences")
+    expected_exit = int(totals["failed"] > 0 or totals["parity_differences"] > 0)
+    if runner_exit_code != expected_exit:
+        raise ValueError(f"runner exited {runner_exit_code}; expected {expected_exit}")
 
 
 def main(argv=None):
@@ -111,6 +124,10 @@ def main(argv=None):
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--compare-monad-revm", action="store_true",
+        help="require the comparison-enabled runner and exact reference outcomes",
+    )
     args = parser.parse_args(argv)
     try:
         expected = json.loads(Path(__file__).with_name("fixture_expectations.json").read_text())
@@ -127,7 +144,7 @@ def main(argv=None):
                 check=False,
             )
         report = json.loads(args.report.read_text())
-        check_report(report, args.fixtures, expected, result.returncode)
+        check_report(report, args.fixtures, expected, result.returncode, args.compare_monad_revm)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         message = f"Fixture gate failed: {error}"
         exit_code = 1

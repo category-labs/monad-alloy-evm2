@@ -64,15 +64,17 @@ jobs:
       - name: Test fixture runner and acceptance policy
         run: |
           cargo test --locked -p monad-evm2-fixtures
+          cargo test --locked -p monad-evm2-fixtures --features compare-monad-revm
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: Build fixture runner
-        run: cargo build --locked -p monad-evm2-fixtures
+        run: cargo build --locked -p monad-evm2-fixtures --features compare-monad-revm
       - name: Replay corpus and check exact outcomes
         run: >-
           python3 .github/scripts/fixture_ci.py
           --runner target/debug/monad-evm2-fixtures
           --fixtures .fixture-spec/test/execution/fixtures/blockchain_tests
           --report fixture-results/report.json
+          --compare-monad-revm
       - name: Upload raw fixture and parity report
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -1,4 +1,4 @@
-//! Valid-block execution commitments and paired reference observations.
+//! Valid-block execution commitments and optional reference observations.
 
 use crate::{
     engine::{self, BlockContext, Request},
@@ -25,7 +25,7 @@ pub(crate) struct Stats {
     pub(crate) transactions: usize,
 }
 
-pub(crate) fn execute(fixture: &Fixture, parity: &mut ParityReport) -> Result<Stats> {
+pub(crate) fn execute(fixture: &Fixture, _parity: &mut ParityReport) -> Result<Stats> {
     let mut db = engine::database(&fixture.pre)?;
     ensure!(
         state::root(&fixture.pre) == fixture.genesis.state_root,
@@ -114,10 +114,16 @@ pub(crate) fn execute(fixture: &Fixture, parity: &mut ParityReport) -> Result<St
                 let at = format!("block {index}, system call {target}");
                 let request =
                     Request::System { target, data: Bytes::copy_from_slice(data.as_slice()) };
-                let reference_db = engine::reference_db(&db)?;
-                let actual =
+                #[cfg(feature = "compare-monad-revm")]
+                let reference_db = crate::reference::database(&db)?;
+                let _actual =
                     engine::actual(&mut db, &context, &request).wrap_err_with(|| at.clone())?;
-                parity.record(at, actual, engine::reference(reference_db, &context, &request));
+                #[cfg(feature = "compare-monad-revm")]
+                _parity.record(
+                    at,
+                    _actual,
+                    crate::reference::execute(reference_db, &context, &request),
+                );
             }
         }
         let mut cumulative_gas_used = 0u64;
@@ -136,7 +142,8 @@ pub(crate) fn execute(fixture: &Fixture, parity: &mut ParityReport) -> Result<St
             context.chain.current_tx_index = tx_index;
             let at = format!("block {index}, transaction {tx_index}");
             let request = Request::Transaction { tx, sender };
-            let reference_db = engine::reference_db(&db)?;
+            #[cfg(feature = "compare-monad-revm")]
+            let reference_db = crate::reference::database(&db)?;
             let actual = engine::actual(&mut db, &context, &request)
                 .wrap_err_with(|| format!("{at}: unexpected transaction rejection"))?;
             ensure!(
@@ -159,7 +166,8 @@ pub(crate) fn execute(fixture: &Fixture, parity: &mut ParityReport) -> Result<St
             .with_bloom();
             bloom |= receipt.logs_bloom;
             receipts.push(ReceiptEnvelope::from_typed(tx.tx_type(), receipt));
-            parity.record(at, actual, engine::reference(reference_db, &context, &request));
+            #[cfg(feature = "compare-monad-revm")]
+            _parity.record(at, actual, crate::reference::execute(reference_db, &context, &request));
             stats.transactions += 1;
         }
         grandparent_participants = context.chain.parent_senders_and_authorities;

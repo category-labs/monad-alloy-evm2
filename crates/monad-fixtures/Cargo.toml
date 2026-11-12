@@ -13,9 +13,7 @@ publish = false
 [dependencies]
 monad-evm2.workspace = true
 evm2.workspace = true
-monad-revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"] }
-revm = { workspace = true, features = ["std"] }
-alloy-consensus = { workspace = true, default-features = true, features = ["secp256k1"] }
+alloy-consensus = { workspace = true, default-features = true, features = ["k256", "secp256k1"] }
 alloy-primitives = { workspace = true, default-features = true, features = ["serde"] }
 alloy-rlp.workspace = true
 alloy-trie.workspace = true
@@ -25,9 +23,16 @@ serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 walkdir.workspace = true
 
+# compare-monad-revm
+monad-revm = { workspace = true, optional = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"] }
+revm = { workspace = true, optional = true, features = ["std"] }
+
 [dev-dependencies]
 alloy-eips.workspace = true
 tempfile.workspace = true
+
+[features]
+compare-monad-revm = ["dep:monad-revm", "dep:revm"]
 
 [lints]
 workspace = true

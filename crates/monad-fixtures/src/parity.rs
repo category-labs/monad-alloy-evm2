@@ -48,6 +48,7 @@ pub struct ParityReport {
     pub differences: Vec<ParityDifference>,
 }
 
+#[cfg(feature = "compare-monad-revm")]
 impl ParityReport {
     pub(crate) fn record(
         &mut self,

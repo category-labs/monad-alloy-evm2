@@ -40,15 +40,16 @@ fn run(args: Args) -> Result<u8> {
                 monad_evm2_fixtures::Status::Failed => "FAIL",
                 monad_evm2_fixtures::Status::Unsupported => "UNSUPPORTED",
             };
-            writeln!(
-                output,
-                "{status} {} :: {} — {}; {} parity checks, {} differences",
-                case.file.display(),
-                case.name,
-                case.message,
-                case.parity.checks,
-                case.parity.differences.len(),
-            )?;
+            write!(output, "{status} {} :: {} — {}", case.file.display(), case.name, case.message,)?;
+            if cfg!(feature = "compare-monad-revm") {
+                write!(
+                    output,
+                    "; {} parity checks, {} differences",
+                    case.parity.checks,
+                    case.parity.differences.len()
+                )?;
+            }
+            writeln!(output)?;
             for difference in &case.parity.differences {
                 writeln!(
                     output,
@@ -66,13 +67,15 @@ fn run(args: Args) -> Result<u8> {
             report.summary.unsupported,
             report.summary.total
         )?;
-        writeln!(
-            output,
-            "{} parity checks, {} differences; {} reference receipts corrected to full-limit charging",
-            report.summary.parity_checks,
-            report.summary.parity_differences,
-            report.summary.corrected_reference_receipts
-        )?;
+        if cfg!(feature = "compare-monad-revm") {
+            writeln!(
+                output,
+                "{} parity checks, {} differences; {} reference receipts corrected to full-limit charging",
+                report.summary.parity_checks,
+                report.summary.parity_differences,
+                report.summary.corrected_reference_receipts
+            )?;
+        }
     }
     Ok(report.exit_code(args.fail_on_unsupported))
 }

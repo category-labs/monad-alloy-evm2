@@ -8,7 +8,6 @@ use alloy_trie::{
 };
 use evm2::{bytecode::Bytecode, evm::InMemoryDB};
 use eyre::{Result, ensure, eyre};
-use revm::{database::InMemoryDB as ReferenceDB, state::Bytecode as ReferenceBytecode};
 use std::collections::BTreeSet;
 
 pub(crate) fn snapshot(db: &InMemoryDB) -> Allocation {
@@ -36,29 +35,6 @@ pub(crate) fn snapshot(db: &InMemoryDB) -> Allocation {
                         .collect()
                 })
                 .unwrap_or_default();
-            Some((*address, Account { nonce: info.nonce, balance: info.balance, code, storage }))
-        })
-        .collect()
-}
-
-pub(crate) fn reference_snapshot(db: &ReferenceDB) -> Allocation {
-    db.cache
-        .accounts
-        .iter()
-        .filter_map(|(address, account)| {
-            let info = account.info()?;
-            let code = db
-                .cache
-                .contracts
-                .get(&info.code_hash)
-                .map(ReferenceBytecode::original_bytes)
-                .unwrap_or_default();
-            let storage = account
-                .storage
-                .iter()
-                .filter(|(_, value)| !value.is_zero())
-                .map(|(k, v)| (*k, *v))
-                .collect();
             Some((*address, Account { nonce: info.nonce, balance: info.balance, code, storage }))
         })
         .collect()

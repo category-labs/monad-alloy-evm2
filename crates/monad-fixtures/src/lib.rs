@@ -13,6 +13,9 @@ mod parity;
 mod state;
 pub use parity::{Observation, ParityDifference, ParityReport};
 
+#[cfg(feature = "compare-monad-revm")]
+mod reference;
+
 /// Result of checking a single fixture case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +41,7 @@ pub struct CaseReport {
     pub status: Status,
     /// Checked block/transaction counts or a specific failure/unsupported reason.
     pub message: String,
-    /// Comparisons against monad-revm 0.8.0, separate from fixture assertions.
+    /// Optional comparisons against monad-revm 0.8.0, separate from fixture assertions.
     pub parity: ParityReport,
 }
 
@@ -97,6 +100,7 @@ impl Report {
 /// symlinks. Corpus `index.json` manifests are excluded from directory discovery.
 /// The optional filter is a substring of the case name. Malformed files remain
 /// failures even when filtering, and do not prevent other files from running.
+/// The `compare-monad-revm` feature additionally compares execution with the reference.
 pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
     let mut files = Vec::new();
     for path in paths {
@@ -177,7 +181,11 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
     }
     Ok(Report {
         schema_version: 1,
-        verification: "valid_block_execution_and_reference_parity",
+        verification: if cfg!(feature = "compare-monad-revm") {
+            "valid_block_execution_and_reference_parity"
+        } else {
+            "valid_block_execution"
+        },
         summary,
         cases,
     })
