@@ -132,3 +132,38 @@ jobs:
       - name: Publish dry run
         if: steps.policy.outputs.enabled == 'true'
         run: cargo publish --locked -p monad-evm2 --registry crates-io --dry-run
+
+  foundry-revision:
+    name: Match Foundry's evm2 revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read Foundry's current dependency pins
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: foundry-rs/foundry
+          ref: master
+          path: .foundry
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Check runtime and macro revisions
+        run: |
+          python3 - <<'PYTHON'
+          import tomllib
+          from pathlib import Path
+
+          runtime = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["dependencies"]
+          foundry = tomllib.loads(Path(".foundry/Cargo.toml").read_text())
+          for name in ("evm2", "evm2-macros"):
+              dependency = foundry["workspace"]["dependencies"][name]
+              effective = foundry.get("patch", {}).get(dependency["git"], {}).get(name, dependency)
+              expected = effective["rev"]
+              actual = runtime[name]["rev"]
+              if actual != expected:
+                  raise SystemExit(f"{name}: runtime pins {actual}, Foundry pins {expected}; align and rerun downstream tests")
+              print(f"{name}: {actual}")
+          PYTHON

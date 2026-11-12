@@ -125,7 +125,9 @@ cargo test --locked -p monad-evm2 --features compare-monad-revm
 from the reference; they do not override protocol expectations. CI runs independent
 checks on pushes and pull requests. The manual
 [Reference comparisons workflow](../../.github/workflows/reference.yml) runs the
-reference audit for both crates.
+reference audit for both crates. CI also checks that the runtime and macro revisions
+match Foundry master's effective evm2 pins. Dependency updates must retain that
+alignment and pass Foundry's Monad integration tests.
 
 Check without the standard library:
 
