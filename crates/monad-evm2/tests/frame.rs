@@ -225,8 +225,10 @@ fn compare_with_warmth(
     beneficiary: Address,
     access_list: Vec<AccessListItem>,
 ) -> (TxResult<MonadEvmTypes>, Selector) {
+    #[cfg(feature = "compare-monad-revm")]
+    let reference_access_list = access_list.clone();
     let (result, selector) =
-        execute_with_warmth(root, child, grandchild, accounts, beneficiary, access_list.clone());
+        execute_with_warmth(root, child, grandchild, accounts, beneficiary, access_list);
     #[cfg(feature = "compare-monad-revm")]
     {
         let mut db = ReferenceDB::default();
@@ -248,7 +250,7 @@ fn compare_with_warmth(
                     .kind(TxKind::Call(ROOT))
                     .gas_limit(GAS)
                     .gas_price(0)
-                    .access_list(access_list.into())
+                    .access_list(reference_access_list.into())
                     .build_fill(),
             )
             .unwrap();
