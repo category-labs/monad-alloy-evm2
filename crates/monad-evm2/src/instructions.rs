@@ -101,6 +101,7 @@ pub(crate) const fn configure(config: &mut OpcodeConfig<MonadEvmTypes>) {
             0,
         );
     config.set_instruction::<clz>(op::CLZ, 0);
+    config.set_instruction::<crate::extension::extension>(crate::extension::EXTENSION, 0);
 }
 
 /// Dispatches only the rules that differ between the supported Monad frames.
@@ -145,6 +146,17 @@ fn execute_message<I: Instruction<MonadEvmTypes>>(
     let ancestors = state.host().ext().memory_pool_offset;
     state.host().ext_mut().memory_pool_offset =
         ancestors.checked_add(frame_memory).ok_or(InstrStop::MemoryLimitOOG)?;
+    // Record the suspended frame's caller before entering a child, including
+    // calls from an older frame into a MonadNext override. Slots survive state
+    // rollback and siblings overwrite them; CALLERN only reads active ancestors.
+    let message = state.message();
+    let depth = usize::from(message.depth);
+    let caller = message.caller;
+    let callers = &mut state.host().ext_mut().frame.callers;
+    if callers.len() <= depth {
+        callers.resize(depth + 1, alloy_primitives::Address::ZERO);
+    }
+    callers[depth] = caller;
     let result = I::execute(pc, stack, state);
     // Restore on success, exceptional halt, inspector override and database error.
     state.host().ext_mut().memory_pool_offset = ancestors;

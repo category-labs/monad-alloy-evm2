@@ -2201,7 +2201,8 @@ dependencies = [
  "alloy-sol-types",
  "evm2",
  "evm2-macros",
- "monad-revm",
+ "monad-revm 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "monad-revm 0.8.0 (git+https://github.com/category-labs/monad-revm?rev=6403f504c2bdab6875bd9cb34ad2d7aebb618309)",
  "revm",
  "serde",
  "serde_json",
@@ -2220,7 +2221,7 @@ dependencies = [
  "evm2",
  "eyre",
  "monad-evm2",
- "monad-revm",
+ "monad-revm 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "revm",
  "serde",
  "serde_json",
@@ -2233,6 +2234,18 @@ name = "monad-revm"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27654f9cc215f197ccf39165b6565d9099e65cd1b28314e07b241c6bc6731616"
+dependencies = [
+ "alloy-sol-types",
+ "auto_impl",
+ "revm",
+ "revm-interpreter",
+ "serde",
+]
+
+[[package]]
+name = "monad-revm"
+version = "0.8.0"
+source = "git+https://github.com/category-labs/monad-revm?rev=6403f504c2bdab6875bd9cb34ad2d7aebb618309#6403f504c2bdab6875bd9cb34ad2d7aebb618309"
 dependencies = [
  "alloy-sol-types",
  "auto_impl",

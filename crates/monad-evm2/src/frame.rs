@@ -25,6 +25,8 @@ pub fn frame_hardfork(host: &MonadHost<'_>) -> MonadHardfork {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FrameContext {
     active: Option<MonadHardfork>,
+    /// Callers of suspended frames, indexed by zero-based depth.
+    pub(crate) callers: Vec<Address>,
     /// The factory's requested limit, before the MonadNine cap.
     pub(crate) memory_limit: Option<u64>,
     /// Transaction warmth independent of the currently selected precompile set.
@@ -33,7 +35,14 @@ pub(crate) struct FrameContext {
 
 impl FrameContext {
     pub(crate) fn reset(&mut self) {
+        self.reset_for_transaction(false);
+    }
+
+    pub(crate) fn reset_for_transaction(&mut self, preserve_callers: bool) {
         self.active = None;
+        if !preserve_callers {
+            self.callers.clear();
+        }
         self.base_warm = None;
     }
 }

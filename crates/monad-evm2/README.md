@@ -4,8 +4,9 @@ Monad execution on [evm2](https://github.com/alloy-rs/evm2), including transacti
 fees, memory and storage pricing, precompiles, staking, reserve balances, and
 inspectors. Import the library as `monad_evm2`.
 
-Supports MonadEight, MonadNine, and MonadTen. `MonadNext` retains MonadTen's rules;
-see [hardfork definitions](src/spec.rs) for activation schedules and EIP selections.
+Supports MonadEight, MonadNine, and MonadTen. `MonadNext` adds
+[MIP-7/MIP-18 extensions](docs/extensions.md) on Osaka. See
+[hardfork definitions](src/spec.rs) for activation schedules and EIP selections.
 
 ## Runtime usage
 
@@ -96,6 +97,7 @@ simplified public-key identifiers.
 | `portable` | Portable KZG and BLST builds. | Yes |
 | `memory_limit` | Compatibility flag; memory limits always apply. | No |
 | `compare-monad-revm` | Development tests against monad-revm 0.8.0. | No |
+| `compare-monad-revm-main` | Extension parity against a pinned monad-revm main commit. | No |
 
 Memory is shared by active frames and capped at 8 MiB from MonadNine onward.
 Disable default features for `no_std` builds.
@@ -119,11 +121,12 @@ without compiling monad-revm or revm. Add the optional comparison checks with:
 
 ```sh
 cargo test --locked -p monad-evm2 --features compare-monad-revm
+cargo test --locked -p monad-evm2 --features compare-monad-revm-main --test extensions
 ```
 
 `--all-features` also enables these comparisons. They retain documented differences
 from the reference; they do not override protocol expectations. CI runs independent
-checks on pushes and pull requests. The manual
+checks and extension parity on pushes and pull requests. The manual
 [Reference comparisons workflow](../../.github/workflows/reference.yml) runs the
 reference audit for both crates. CI also checks that the runtime and macro revisions
 match Foundry master's effective evm2 pins. Dependency updates must retain that
