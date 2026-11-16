@@ -91,7 +91,9 @@ fn execute(
     native: bool,
     inspect: bool,
 ) -> Outcome {
-    let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx.clone()), SENDER);
+    #[cfg(feature = "compare-monad-revm-main")]
+    let expected = reference::execute(spec, accounts, tx.clone(), inspect);
+    let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), SENDER);
     let mut trace = Trace::default();
     let result = if native {
         let factory = MonadEvmFactory;
@@ -120,7 +122,7 @@ fn execute(
     };
     let actual = Outcome::new(result, trace);
     #[cfg(feature = "compare-monad-revm-main")]
-    assert_eq!(actual, reference::execute(spec, accounts, tx, inspect), "{spec} native={native}");
+    assert_eq!(actual, expected, "{spec} native={native}");
     actual
 }
 
