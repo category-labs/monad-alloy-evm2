@@ -2,3 +2,4 @@
 /.fixture-spec/
 /fixture-results/
 __pycache__/
+node_modules/
