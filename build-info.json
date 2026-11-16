@@ -1,0 +1,9 @@
+{
+  "sourceRepository": "https://github.com/category-labs/monad-alloy-evm2",
+  "sourceRevision": "bd31008754ef1882cfb44056fba2f39e5b1be60a",
+  "sourceDirty": false,
+  "cargoLockSha256": "757da1482729ab2bd67a6e8ec440e889fc7ca9da87aff283b02e82e012a412b3",
+  "rustToolchain": "1.96.0",
+  "wasmBindgen": "0.2.128",
+  "target": "wasm32-unknown-unknown"
+}
