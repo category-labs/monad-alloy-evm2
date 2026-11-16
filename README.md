@@ -7,5 +7,6 @@ fixture replay and optional execution comparisons.
 | --- | --- |
 | [`monad-evm2`](crates/monad-evm2/README.md) | Runtime library for Monad hardforks, gas rules, precompiles, staking, reserve balances, and inspected execution. |
 | [`monad-evm2-fixtures`](crates/monad-fixtures/README.md) | Blockchain fixture runner that verifies execution commitments, with optional monad-revm comparisons. |
+| [`monad-evm2js`](crates/monad-evm2js/README.md) | Browser and Node.js WASM wrapper with the monad-revmjs Engine API. |
 
 Licensed under [MIT](LICENSE).

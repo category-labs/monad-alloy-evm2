@@ -38,17 +38,41 @@ jobs:
             exit 1
           fi
       - name: Lint runtime and test features
-        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main,monad-evm2js/compare-monad-revmjs-main -- -D warnings
       - name: Test default features
         run: cargo test --locked -p monad-evm2
       - name: Test optional features
-        run: cargo test --locked -p monad-evm2 --features serde,memory_limit,compare-monad-revm-main
+        run: cargo test --locked -p monad-evm2 -p monad-evm2js --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main,monad-evm2js/compare-monad-revmjs-main
       - name: Test without default features
         run: cargo test --locked -p monad-evm2 --no-default-features --features std,serde
       - name: Check documentation
         run: cargo doc --locked --workspace --no-deps --features monad-evm2/serde,monad-evm2/memory_limit
         env:
           RUSTDOCFLAGS: -D warnings
+
+  wasm-package:
+    name: Build and test WASM package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          target: wasm32-unknown-unknown
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+      - name: Install package test tools
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix crates/monad-evm2js
+          crates/monad-evm2js/node_modules/.bin/playwright install --with-deps chromium
+          cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - name: Build browser package
+        run: node crates/monad-evm2js/scripts/build.mjs
+      - name: Test installed package, types, and browser worker
+        run: node crates/monad-evm2js/scripts/test-package.mjs
 
   fixtures:
     name: Replay Monad execution fixtures

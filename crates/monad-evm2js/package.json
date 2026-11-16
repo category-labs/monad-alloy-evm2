@@ -1,0 +1,9 @@
+{
+  "name": "monad-evm2js-tests",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright": "1.60.0",
+    "typescript": "5.5.4"
+  }
+}
