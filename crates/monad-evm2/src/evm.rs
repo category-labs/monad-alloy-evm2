@@ -133,8 +133,8 @@ impl MonadEvmExt {
     ///
     /// Use when an embedder restores a snapshot or accepts a preserved synthetic
     /// call into a running host. Chain context, reserves and their journal cursor
-    /// come from `context`; suspended memory, frame selection, reserve adjudication
-    /// and system dispatch remain attached to the running execution.
+    /// come from `context`; suspended memory, caller ancestry, frame selection,
+    /// reserve adjudication and system dispatch remain attached to the running execution.
     ///
     /// Restore matching native state first. After merging changes from a different
     /// journal, call [`crate::reserve_balance::rebase_reserve_balance`] (or its

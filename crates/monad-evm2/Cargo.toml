@@ -26,6 +26,9 @@ serde = { workspace = true, optional = true }
 monad-revm = { workspace = true, optional = true, features = ["std", "memory_limit"] }
 revm = { workspace = true, optional = true, features = ["std"] }
 
+# compare-monad-revm-main
+monad-revm-main = { package = "monad-revm", git = "https://github.com/category-labs/monad-revm", rev = "6403f504c2bdab6875bd9cb34ad2d7aebb618309", default-features = false, features = ["std", "memory_limit"], optional = true }
+
 [dev-dependencies]
 alloy-eips.workspace = true
 serde_json.workspace = true
@@ -42,6 +45,8 @@ blst = ["evm2/blst"]
 memory_limit = []
 # Optional reference engine for differential tests.
 compare-monad-revm = ["dep:monad-revm", "dep:revm"]
+# Extension parity against a pinned main revision, separate from the 0.8.0 audit.
+compare-monad-revm-main = ["dep:monad-revm-main", "dep:revm"]
 
 [lints]
 workspace = true

@@ -66,10 +66,10 @@ pub enum MonadHardfork {
     /// EIP-2930 access lists. It retains the same Ethereum EIP selection as MonadNine.
     #[default]
     MonadTen = 102,
-    /// Unscheduled development hardfork with monad-revm 0.8.0's MonadTen rules.
+    /// MonadTen plus MIP-7 extension decoding and MIP-18 call-stack introspection.
     ///
-    /// The C++ client's `MONAD_NEXT` selects Amsterdam and additional development
-    /// rules. Those rules are not implied by this release's `MonadNext` identifier.
+    /// Uses Osaka and has no scheduled activation. The extensions follow the
+    /// C++ MIP-7/MIP-18 proposals; unrelated C++ development rules are not implied.
     MonadNext = 103,
 }
 

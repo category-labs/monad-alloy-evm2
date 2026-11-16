@@ -38,6 +38,8 @@ pub use frame::frame_hardfork;
 
 mod instructions;
 
+pub mod extension;
+
 mod memory;
 pub use memory::monad_memory_cost;
 

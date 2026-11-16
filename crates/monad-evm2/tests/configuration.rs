@@ -181,7 +181,7 @@ fn inherited_opcodes_follow_mip5_without_enabling_amsterdam() {
         for opcode in [op::BLOBHASH, op::BLOBBASEFEE] {
             assert!(opcodes.is_defined(opcode), "{spec} opcode {opcode:#x}");
         }
-        // MonadNext follows the published Rust release, not C++ MONAD_NEXT.
+        // MonadNext adds MIP-7/MIP-18 while retaining Osaka's base rules.
         for opcode in [op::DUPN, op::SWAPN, op::EXCHANGE, op::SLOTNUM] {
             assert!(!opcodes.is_defined(opcode), "{spec} opcode {opcode:#x}");
         }
