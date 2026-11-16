@@ -68,8 +68,7 @@ pub enum MonadHardfork {
     MonadTen = 102,
     /// MonadTen plus MIP-7 extension decoding and MIP-18 call-stack introspection.
     ///
-    /// Uses Osaka and has no scheduled activation. The extensions follow the
-    /// C++ MIP-7/MIP-18 proposals; unrelated C++ development rules are not implied.
+    /// Uses Osaka and has no scheduled activation.
     MonadNext = 103,
 }
 

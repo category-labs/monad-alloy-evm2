@@ -4,8 +4,8 @@ Monad execution on [evm2](https://github.com/alloy-rs/evm2), including transacti
 fees, memory and storage pricing, precompiles, staking, reserve balances, and
 inspectors. Import the library as `monad_evm2`.
 
-Supports MonadEight, MonadNine, and MonadTen. `MonadNext` adds
-[MIP-7/MIP-18 extensions](docs/extensions.md) on Osaka. See
+Supports MonadEight, MonadNine, and MonadTen. [MonadNext](docs/next.md) adds
+MIP-7/MIP-18 extensions on Osaka. See
 [hardfork definitions](src/spec.rs) for activation schedules and EIP selections.
 
 ## Runtime usage

@@ -37,32 +37,18 @@ jobs:
             echo "::error::Default protocol tests must not depend on a reference engine"
             exit 1
           fi
-      - name: Lint runtime features
-        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit -- -D warnings
+      - name: Lint runtime and test features
+        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main -- -D warnings
       - name: Test default features
         run: cargo test --locked -p monad-evm2
-      - name: Test serialization and compatibility features
-        run: cargo test --locked -p monad-evm2 --features serde,memory_limit
+      - name: Test optional features
+        run: cargo test --locked -p monad-evm2 --features serde,memory_limit,compare-monad-revm-main
       - name: Test without default features
         run: cargo test --locked -p monad-evm2 --no-default-features --features std,serde
       - name: Check documentation
         run: cargo doc --locked --workspace --no-deps --features monad-evm2/serde,monad-evm2/memory_limit
         env:
           RUSTDOCFLAGS: -D warnings
-
-  extensions:
-    name: Monad Next reference parity
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-      - name: Lint extension parity tests
-        run: cargo clippy --locked -p monad-evm2 --test extensions --features compare-monad-revm-main -- -D warnings
-      - name: Compare extensions with pinned monad-revm main
-        run: cargo test --locked -p monad-evm2 --test extensions --features compare-monad-revm-main
 
   fixtures:
     name: Replay Monad execution fixtures
