@@ -22,7 +22,6 @@ evm2-macros.workspace = true
 # serde
 serde = { workspace = true, optional = true }
 
-
 [dev-dependencies]
 alloy-eips.workspace = true
 serde_json.workspace = true

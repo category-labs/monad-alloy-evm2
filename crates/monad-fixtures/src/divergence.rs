@@ -54,7 +54,6 @@ mod tests {
             status: Status::Failed,
             message: HIGH_GAS_USAGE_FAILURE.into(),
             known_spec_model_divergence: None,
-            parity: Default::default(),
         }
     }
 

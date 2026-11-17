@@ -23,80 +23,36 @@ class FixtureGateTests(unittest.TestCase):
             "pass": {"config": {"network": "MONAD_NINE"}},
             "known": {"config": {"network": "MONAD_EIGHT"}},
         }))
-        actual = {
-            "status": "reserve_balance_violation", "gas_spent": 21000,
-            "refunded": 0, "receipt_gas": 50000, "output": "0x", "logs": [],
-            "created_address": None, "state_root": "0x" + "11" * 32,
-        }
-        difference = {
-            "at": "block 1, transaction 0", "actual": actual,
-            "reference": {**actual, "status": "success", "state_root": "0x" + "22" * 32},
-            "reference_error": None,
-        }
         self.report = {
-            "schema_version": 2, "verification": "valid_block_execution_and_reference_parity",
+            "schema_version": 3, "verification": "valid_block_execution",
             "summary": {
                 "total": 2, "passed": 1, "failed": 1, "unsupported": 0,
                 "known_spec_model_divergences": 1,
-                "parity_checks": 2, "parity_differences": 1, "corrected_reference_receipts": 2,
             },
             "cases": [
                 {"file": str(self.file), "name": "pass", "network": "MONAD_NINE", "status": "passed",
                  "message": "execution commitments matched",
-                 "known_spec_model_divergence": None,
-                 "parity": {"checks": 1, "corrected_receipts": 1, "differences": [difference]}},
+                 "known_spec_model_divergence": None},
                 {"file": str(self.file), "name": "known", "network": "MONAD_EIGHT", "status": "failed",
                  "message": "known receipts root mismatch",
-                 "known_spec_model_divergence": "gas_fees_exceed_reserve",
-                 "parity": {"checks": 1, "corrected_receipts": 1, "differences": []}},
+                 "known_spec_model_divergence": "gas_fees_exceed_reserve"},
             ],
         }
         self.expected = {
-            "spec_revision": "a" * 40, "reference": "monad-revm 0.8.0",
+            "spec_revision": "a" * 40,
             "summary": self.report["summary"].copy(),
             "spec_model_divergences": [{"file": "cases.json", "name": "known", "network": "MONAD_EIGHT",
                                         "message": "known receipts root mismatch",
                                         "known_spec_model_divergence": "gas_fees_exceed_reserve"}],
-            "reserve_differences": [{"file": "cases.json", "name": "pass", "network": "MONAD_NINE",
-                                     "count": 1, "sha256": fixture_ci.digest([difference])}],
         }
 
     def check(self, report=None, exit_code=1):
-        fixture_ci.check_report(self.report if report is None else report, self.root, self.expected, exit_code, compare_monad_revm=True)
+        fixture_ci.check_report(self.report if report is None else report, self.root, self.expected, exit_code)
 
     def test_accepts_exact_results_without_rewriting_failures(self):
         original = copy.deepcopy(self.report)
         self.check()
         self.assertEqual(original, self.report)
-
-    def independent_report(self):
-        report = copy.deepcopy(self.report)
-        report["verification"] = "valid_block_execution"
-        for counter in ("parity_checks", "parity_differences", "corrected_reference_receipts"):
-            report["summary"][counter] = 0
-        for case in report["cases"]:
-            case["parity"] = {"checks": 0, "corrected_receipts": 0, "differences": []}
-        return report
-
-    def test_independent_mode_keeps_fixture_outcomes_and_requires_zero_comparisons(self):
-        report = self.independent_report()
-        original = copy.deepcopy(report)
-        fixture_ci.check_report(report, self.root, self.expected, 1)
-        self.assertEqual(report, original)
-        for change in ("status", "comparison", "verification"):
-            changed = copy.deepcopy(report)
-            if change == "status":
-                changed["cases"][1]["status"] = "passed"
-            elif change == "comparison":
-                changed["cases"][0]["parity"]["checks"] = 1
-            else:
-                changed["verification"] = "valid_block_execution_and_reference_parity"
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                fixture_ci.check_report(changed, self.root, self.expected, 1)
-
-    def test_comparison_mode_rejects_a_runner_built_without_the_feature(self):
-        with self.assertRaises(ValueError):
-            self.check(self.independent_report())
 
     def test_rejects_missing_extra_duplicate_and_substituted_cases(self):
         variants = [[], self.report["cases"][:1], self.report["cases"] * 2]
@@ -122,47 +78,16 @@ class FixtureGateTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.check(report)
 
-    def test_requires_the_exact_spec_model_classification_in_both_modes(self):
-        for compare in (False, True):
-            for index, classification in [(0, "gas_fees_exceed_reserve"), (1, None), (1, "other")]:
-                report = copy.deepcopy(self.report) if compare else self.independent_report()
-                report["cases"][index]["known_spec_model_divergence"] = classification
-                with self.subTest(compare=compare, index=index, classification=classification), self.assertRaises(ValueError):
-                    fixture_ci.check_report(report, self.root, self.expected, 1, compare)
-            for index in (0, 1):
-                report = copy.deepcopy(self.report) if compare else self.independent_report()
-                del report["cases"][index]["known_spec_model_divergence"]
-                with self.subTest(compare=compare, missing=index), self.assertRaises(ValueError):
-                    fixture_ci.check_report(report, self.root, self.expected, 1, compare)
-
-    def test_rejects_any_changed_parity_observation(self):
-        for side in ("actual", "reference"):
-            for key, value in {
-                "status": "revert", "gas_spent": 21001, "refunded": 1,
-                "receipt_gas": 21000, "state_root": "0x" + "33" * 32,
-                "output": "0x01", "logs": [{"address": "changed"}],
-                "created_address": "0x" + "44" * 20,
-            }.items():
-                with self.subTest(side=side, key=key):
-                    report = copy.deepcopy(self.report)
-                    report["cases"][0]["parity"]["differences"][0][side][key] = value
-                    with self.assertRaises(ValueError):
-                        self.check(report)
-
-    def test_rejects_new_missing_and_failed_reference_comparisons(self):
-        for change in ("new", "missing", "error", "location"):
+    def test_requires_the_exact_spec_model_classification(self):
+        for index, classification in [(0, "gas_fees_exceed_reserve"), (1, None), (1, "other")]:
             report = copy.deepcopy(self.report)
-            differences = report["cases"][0]["parity"]["differences"]
-            if change == "new":
-                report["cases"][1]["parity"]["differences"] = differences
-            elif change == "missing":
-                differences.clear()
-            elif change == "error":
-                differences[0]["reference"] = None
-                differences[0]["reference_error"] = "rejected"
-            else:
-                differences[0]["at"] = "block 0, transaction 0"
-            with self.subTest(change=change), self.assertRaises(ValueError):
+            report["cases"][index]["known_spec_model_divergence"] = classification
+            with self.subTest(index=index, classification=classification), self.assertRaises(ValueError):
+                self.check(report)
+        for index in (0, 1):
+            report = copy.deepcopy(self.report)
+            del report["cases"][index]["known_spec_model_divergence"]
+            with self.subTest(missing=index), self.assertRaises(ValueError):
                 self.check(report)
 
     def test_rejects_changed_counters_schema_and_exit_code(self):
@@ -170,11 +95,6 @@ class FixtureGateTests(unittest.TestCase):
             report = copy.deepcopy(self.report)
             report["summary"][counter] += 1
             with self.subTest(counter=counter), self.assertRaises(ValueError):
-                self.check(report)
-        for key, value in [("checks", 0), ("checks", -1), ("corrected_receipts", 2), ("checks", True)]:
-            report = copy.deepcopy(self.report)
-            report["cases"][0]["parity"][key] = value
-            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 self.check(report)
         for key in ("verification", "schema_version"):
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -192,8 +112,8 @@ class FixtureGateTests(unittest.TestCase):
         self.file.rename(fixtures / "cases.json")
         for case in self.report["cases"]:
             case["file"] = str(fixtures / "cases.json")
-        for compare, passes in [(True, True), (True, False), (False, True), (False, False)]:
-            report = copy.deepcopy(self.report) if compare else self.independent_report()
+        for passes in (True, False):
+            report = copy.deepcopy(self.report)
             if not passes:
                 report["cases"][1]["message"] = "unexpected"
             output = self.root / "output" / "report.json"
@@ -213,8 +133,6 @@ class FixtureGateTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 arguments = ["--runner", "runner", "--fixtures", str(fixtures), "--report", str(output)]
-                if compare:
-                    arguments.append("--compare-monad-revm")
                 code = fixture_ci.main(arguments)
             self.assertEqual(code, 0 if passes else 1)
             self.assertEqual(json.loads(output.read_text()), report)
@@ -223,11 +141,6 @@ class FixtureGateTests(unittest.TestCase):
                     "Fixture gate passed: 1 passes; known spec-model divergences: 1, "
                     "unexpected failures: 0, unsupported: 0."
                 )
-                if compare:
-                    message += (
-                        " 2 engine comparisons, 1 exact reserve-enforcement differences; "
-                        "2 reference receipts normalized."
-                    )
             else:
                 message = (
                     "Fixture gate failed: known spec-model divergence changed: "

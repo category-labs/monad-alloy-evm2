@@ -12,12 +12,7 @@ pub use divergence::KnownSpecModelDivergence;
 mod engine;
 mod execute;
 mod fixture;
-mod parity;
 mod state;
-pub use parity::{Observation, ParityDifference, ParityReport};
-
-#[cfg(feature = "compare-monad-revm")]
-mod reference;
 
 /// Result of checking a single fixture case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -46,8 +41,6 @@ pub struct CaseReport {
     pub message: String,
     /// Exact known spec-model difference, without changing the failed status or diagnostic.
     pub known_spec_model_divergence: Option<KnownSpecModelDivergence>,
-    /// Optional comparisons against monad-revm 0.8.0, separate from fixture assertions.
-    pub parity: ParityReport,
 }
 
 /// Counts of selected cases, with no implicit skips.
@@ -63,12 +56,6 @@ pub struct Summary {
     pub known_spec_model_divergences: usize,
     /// Cases that could not be checked.
     pub unsupported: usize,
-    /// Number of operations compared with the reference.
-    pub parity_checks: usize,
-    /// Number of operations that differ from the reference.
-    pub parity_differences: usize,
-    /// Reference receipts corrected to charge the full gas limit.
-    pub corrected_reference_receipts: usize,
 }
 
 /// A deterministic report for a collection of fixture files.
@@ -85,11 +72,10 @@ pub struct Report {
 }
 
 impl Report {
-    /// Returns 1 for fixture failures or reference differences, 2 when nothing
-    /// was executable, and 0 otherwise.
+    /// Returns 1 for fixture failures, 2 when nothing was executable, and 0 otherwise.
     /// With `fail_on_unsupported`, unsupported cases also return 1.
     pub const fn exit_code(&self, fail_on_unsupported: bool) -> u8 {
-        if self.summary.failed > 0 || self.summary.parity_differences > 0 {
+        if self.summary.failed > 0 {
             1
         } else if self.summary.passed == 0 {
             2
@@ -107,7 +93,6 @@ impl Report {
 /// symlinks. Corpus `index.json` manifests are excluded from directory discovery.
 /// The optional filter is a substring of the case name. Malformed files remain
 /// failures even when filtering, and do not prevent other files from running.
-/// The `compare-monad-revm` feature additionally compares execution with the reference.
 pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
     let mut files = Vec::new();
     for path in paths {
@@ -147,7 +132,6 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
                     status: Status::Failed,
                     message: format!("cannot read fixture object: {error:#}"),
                     known_spec_model_divergence: None,
-                    parity: ParityReport::default(),
                 });
                 continue;
             }
@@ -157,9 +141,8 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
                 continue;
             }
             let network = fixture::network_name(&value).map(str::to_owned);
-            let mut parity = ParityReport::default();
             let result = fixture::Fixture::parse(&value).and_then(|fixture| {
-                execute::execute(&fixture, &mut parity).map_err(fixture::FixtureError::Failed)
+                execute::execute(&fixture).map_err(fixture::FixtureError::Failed)
             });
             let (status, message) = match result {
                 Ok(stats) => (
@@ -179,7 +162,6 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
                 status,
                 message,
                 known_spec_model_divergence: None,
-                parity,
             };
             case.known_spec_model_divergence = KnownSpecModelDivergence::classify(&case);
             cases.push(case);
@@ -190,23 +172,11 @@ pub fn run(paths: &[PathBuf], filter: Option<&str>) -> Result<Report> {
     for case in &cases {
         summary.known_spec_model_divergences +=
             usize::from(case.known_spec_model_divergence.is_some());
-        summary.parity_checks += case.parity.checks;
-        summary.parity_differences += case.parity.differences.len();
-        summary.corrected_reference_receipts += case.parity.corrected_receipts;
         match case.status {
             Status::Passed => summary.passed += 1,
             Status::Failed => summary.failed += 1,
             Status::Unsupported => summary.unsupported += 1,
         }
     }
-    Ok(Report {
-        schema_version: 2,
-        verification: if cfg!(feature = "compare-monad-revm") {
-            "valid_block_execution_and_reference_parity"
-        } else {
-            "valid_block_execution"
-        },
-        summary,
-        cases,
-    })
+    Ok(Report { schema_version: 3, verification: "valid_block_execution", summary, cases })
 }

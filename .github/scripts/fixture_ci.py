@@ -1,18 +1,11 @@
-"""Check the pinned corpus, known spec-model divergences and optional reference differences."""
+"""Check the pinned corpus and exact known spec-model divergences."""
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-
-
-def digest(value):
-    """Commit to every observation, including logs, output and both state roots."""
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def identity(case):
@@ -32,15 +25,12 @@ def inventory(root):
     return result
 
 
-def check_report(report, root, expected, runner_exit_code, compare_monad_revm=False):
-    """Reject missing coverage, new differences and any changed known outcome."""
-    verification = (
-        "valid_block_execution_and_reference_parity" if compare_monad_revm else "valid_block_execution"
-    )
+def check_report(report, root, expected, runner_exit_code):
+    """Reject missing coverage, new failures and any changed known outcome."""
     if (
         not isinstance(report, dict)
-        or report.get("schema_version") != 2
-        or report.get("verification") != verification
+        or report.get("schema_version") != 3
+        or report.get("verification") != "valid_block_execution"
     ):
         raise ValueError("unsupported fixture report schema or verification scope")
     cases = report.get("cases")
@@ -49,7 +39,6 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
     root = root.resolve()
     expected_cases = inventory(root)
     divergences = {identity(case): case for case in expected["spec_model_divergences"]}
-    differences = {identity(case): case for case in expected["reserve_differences"]}
     seen = set()
     totals = dict.fromkeys(expected["summary"], 0)
     for case in cases:
@@ -77,54 +66,16 @@ def check_report(report, root, expected, runner_exit_code, compare_monad_revm=Fa
         elif classification is not None:
             raise ValueError(f"unexpected spec-model classification: {key}")
 
-        parity = case["parity"]
-        observed = parity["differences"]
-        checks = parity["checks"]
-        corrections = parity["corrected_receipts"]
-        if not all(type(n) is int and n >= 0 for n in (checks, corrections)):
-            raise ValueError(f"invalid parity counters: {key}")
-        if not isinstance(observed, list) or len(observed) > checks or corrections > checks:
-            raise ValueError(f"inconsistent parity counters: {key}")
-        known_difference = differences.get(key)
-        if not compare_monad_revm:
-            if checks != 0 or corrections != 0 or observed:
-                raise ValueError(f"unexpected reference comparison in independent mode: {key}")
-        elif known_difference:
-            for item in observed:
-                actual, reference = item["actual"], item["reference"]
-                if item["reference_error"] is not None or reference is None:
-                    raise ValueError(f"reference execution failed: {key}")
-                if (
-                    actual["status"] != "reserve_balance_violation"
-                    or reference["status"] not in ("success", "halt")
-                    or actual["logs"] != []
-                    or actual["output"] != "0x"
-                    or any(actual[field] != reference[field] for field in (
-                        "gas_spent", "refunded", "receipt_gas", "created_address"
-                    ))
-                ):
-                    raise ValueError(f"difference is not the known reserve behavior: {key}")
-            if len(observed) != known_difference["count"] or digest(observed) != known_difference["sha256"]:
-                raise ValueError(f"known reserve observations changed: {key}")
-        elif observed:
-            raise ValueError(f"unexpected reference difference: {key}")
         totals["total"] += 1
         totals[case["status"]] += 1
         totals["known_spec_model_divergences"] += int(classification is not None)
-        totals["parity_checks"] += checks
-        totals["parity_differences"] += len(observed)
-        totals["corrected_reference_receipts"] += corrections
     if seen != expected_cases or not seen:
         raise ValueError("fixture results are incomplete or empty")
-    if not divergences.keys() <= seen or not differences.keys() <= seen:
+    if not divergences.keys() <= seen:
         raise ValueError("known fixture identities are missing")
-    expected_summary = expected["summary"].copy()
-    if not compare_monad_revm:
-        for counter in ("parity_checks", "parity_differences", "corrected_reference_receipts"):
-            expected_summary[counter] = 0
-    if report.get("summary") != totals or totals != expected_summary:
+    if report.get("summary") != totals or totals != expected["summary"]:
         raise ValueError(f"unexpected fixture totals: {totals}")
-    expected_exit = int(totals["failed"] > 0 or totals["parity_differences"] > 0)
+    expected_exit = int(totals["failed"] > 0)
     if runner_exit_code != expected_exit:
         raise ValueError(f"runner exited {runner_exit_code}; expected {expected_exit}")
 
@@ -134,10 +85,6 @@ def main(argv=None):
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument(
-        "--compare-monad-revm", action="store_true",
-        help="require the comparison-enabled runner and exact reference outcomes",
-    )
     args = parser.parse_args(argv)
     try:
         expected = json.loads(Path(__file__).with_name("fixture_expectations.json").read_text())
@@ -154,7 +101,7 @@ def main(argv=None):
                 check=False,
             )
         report = json.loads(args.report.read_text())
-        check_report(report, args.fixtures, expected, result.returncode, args.compare_monad_revm)
+        check_report(report, args.fixtures, expected, result.returncode)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         message = f"Fixture gate failed: {error}"
         exit_code = 1
@@ -166,12 +113,6 @@ def main(argv=None):
             f"unexpected failures: {summary['failed'] - summary['known_spec_model_divergences']}, "
             f"unsupported: {summary['unsupported']}."
         )
-        if args.compare_monad_revm:
-            message += (
-                f" {summary['parity_checks']} engine comparisons, "
-                f"{summary['parity_differences']} exact reserve-enforcement differences; "
-                f"{summary['corrected_reference_receipts']} reference receipts normalized."
-            )
         exit_code = 0
     print(message, file=sys.stderr if exit_code else sys.stdout)
     if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):

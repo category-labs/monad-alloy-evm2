@@ -446,49 +446,12 @@ fn enforces_reserves_with_current_and_historical_senders() {
     }
 }
 
-#[cfg(feature = "compare-monad-revm")]
-#[test]
-fn keeps_reference_differences_visible_when_fixture_assertions_pass() {
-    let case = reserve_fixture("MONAD_NINE", 1_000_000, 3, &[&[true], &[false]]);
-    let expected_root = root(&case["postState"]);
-    let report = check(case.clone());
-    assert_eq!(report.cases[0].status, Status::Passed, "{report:?}");
-    assert_eq!(report.summary.parity_checks, 2);
-    assert_eq!(report.summary.parity_differences, 1);
-    let difference = &report.cases[0].parity.differences[0];
-    assert_eq!(difference.at, "block 1, transaction 0");
-    assert_eq!(difference.actual.status, "reserve_balance_violation");
-    assert_eq!(difference.actual.state_root, expected_root);
-    let reference = difference.reference.as_ref().unwrap();
-    assert_eq!(reference.status, "success");
-    assert_ne!(reference.state_root, expected_root);
-    assert_eq!(difference.actual.gas_spent, reference.gas_spent);
-    assert_eq!(report.exit_code(false), 1);
-
-    let dir = tempdir().unwrap();
-    let file = dir.path().join("reserve.json");
-    write_cases(&file, json!({"reserve": case}));
-    let output =
-        Command::new(env!("CARGO_BIN_EXE_monad-evm2-fixtures")).arg(file).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stderr.is_empty());
-    let output = String::from_utf8(output.stdout).unwrap();
-    assert!(output.contains("DIFFERENCE block 1, transaction 0"));
-    assert!(output.contains("2 parity checks, 1 differences"));
-}
-
 #[test]
 fn receipts_charge_the_full_limit_independently_of_consumption() {
     let report = check(transfer());
     assert_eq!(report.exit_code(true), 0);
-    assert_eq!(report.summary.parity_checks, usize::from(cfg!(feature = "compare-monad-revm")));
-    assert_eq!(report.summary.parity_differences, 0);
-    assert_eq!(
-        report.summary.corrected_reference_receipts,
-        usize::from(cfg!(feature = "compare-monad-revm"))
-    );
     // The fixture independently requires a 50,000-gas receipt and its full fee,
-    // while both engines consume only 21,000 gas for this transfer.
+    // while execution consumes only 21,000 gas for this transfer.
     let mut bad = transfer();
     rewrite_block(&mut bad, |block| block.header.gas_used = 21_000);
     let report = check(bad);
@@ -602,7 +565,6 @@ fn applies_system_calls_in_empty_blocks() {
     case["postState"] = post;
     let report = check(case);
     assert_eq!(report.cases[0].status, Status::Passed, "{report:?}");
-    assert_eq!(report.summary.parity_checks, 4 * usize::from(cfg!(feature = "compare-monad-revm")));
     assert_eq!(report.exit_code(true), 0, "{report:?}");
 }
 
@@ -704,7 +666,7 @@ fn discovers_deduplicates_filters_and_continues_after_bad_files() {
     let report = run(&[dir.path().to_owned(), fixture_file], None).unwrap();
     assert_eq!(
         serde_json::to_value(&report.summary).unwrap(),
-        json!({"total": 3, "passed": 1, "failed": 1, "known_spec_model_divergences": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))})
+        json!({"total": 3, "passed": 1, "failed": 1, "known_spec_model_divergences": 0, "unsupported": 1})
     );
     assert_eq!(report.cases[0].name, "<file>");
     assert_eq!(report.cases[1].name, "pass");
@@ -736,11 +698,11 @@ fn cli_json_schema_and_exit_codes() {
         assert_eq!(
             actual,
             json!({
-                "schema_version": 2, "verification": if cfg!(feature = "compare-monad-revm") { "valid_block_execution_and_reference_parity" } else { "valid_block_execution" },
-                "summary": {"total": 2, "passed": 1, "failed": 0, "known_spec_model_divergences": 0, "unsupported": 1, "parity_checks": usize::from(cfg!(feature = "compare-monad-revm")), "parity_differences": 0, "corrected_reference_receipts": usize::from(cfg!(feature = "compare-monad-revm"))},
+                "schema_version": 3, "verification": "valid_block_execution",
+                "summary": {"total": 2, "passed": 1, "failed": 0, "known_spec_model_divergences": 0, "unsupported": 1},
                 "cases": [
-                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "known_spec_model_divergence": null, "parity": {"checks": usize::from(cfg!(feature = "compare-monad-revm")), "corrected_receipts": usize::from(cfg!(feature = "compare-monad-revm")), "differences": []}},
-                    {"file": file.canonicalize().unwrap(), "name": "unsupported", "network": "MONAD_EIGHT", "status": "unsupported", "message": "invalid-block expectations require consensus validation and exact error matching", "known_spec_model_divergence": null, "parity": {"checks": 0, "corrected_receipts": 0, "differences": []}},
+                    {"file": file.canonicalize().unwrap(), "name": "pass", "network": "MONAD_EIGHT", "status": "passed", "message": "1 blocks, 1 transactions; execution commitments matched", "known_spec_model_divergence": null},
+                    {"file": file.canonicalize().unwrap(), "name": "unsupported", "network": "MONAD_EIGHT", "status": "unsupported", "message": "invalid-block expectations require consensus validation and exact error matching", "known_spec_model_divergence": null},
                 ],
             })
         );

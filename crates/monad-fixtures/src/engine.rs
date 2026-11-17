@@ -1,16 +1,17 @@
-//! Independent engine execution from the same canonical pre-state.
+//! Fixture execution using the runtime's transaction results.
 
-use crate::{fixture::Allocation, parity::Observation, state};
+use crate::fixture::Allocation;
 use alloy_consensus::{Header, TxEnvelope, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{
-    AccountInfo,
+    AccountInfo, TxResult,
     bytecode::Bytecode,
     evm::{InMemoryDB, SystemTx},
 };
 use eyre::{Result, WrapErr};
 use monad_evm2::{
-    MonadBlockEnv, MonadChainContext, MonadEvmBuilder, MonadHardfork, MonadTxEnvelope,
+    MonadBlockEnv, MonadChainContext, MonadEvmBuilder, MonadEvmTypes, MonadHardfork,
+    MonadTxEnvelope,
 };
 
 pub(crate) struct BlockContext<'a> {
@@ -44,11 +45,11 @@ pub(crate) enum Request<'a> {
     System { target: Address, data: Bytes },
 }
 
-pub(crate) fn actual(
+pub(crate) fn execute(
     db: &mut InMemoryDB,
     context: &BlockContext<'_>,
     request: &Request<'_>,
-) -> Result<Observation> {
+) -> Result<TxResult<MonadEvmTypes>> {
     let header = context.header;
     let block = MonadBlockEnv {
         number: U256::from(header.number),
@@ -81,8 +82,11 @@ pub(crate) fn actual(
     };
     drop(evm);
     db.commit_pending(&executed.pending_state);
-    let result = executed.result;
-    let status = if result.ext.reverted_for_reserve_balance {
+    Ok(executed.result)
+}
+
+pub(crate) const fn status(result: &TxResult<MonadEvmTypes>) -> &'static str {
+    if result.ext.reverted_for_reserve_balance {
         "reserve_balance_violation"
     } else if result.is_success() {
         "success"
@@ -90,19 +94,7 @@ pub(crate) fn actual(
         "revert"
     } else {
         "halt"
-    };
-    let receipt_gas =
-        matches!(request, Request::Transaction { .. }).then_some(result.ext.charged_gas);
-    Ok(Observation {
-        status,
-        gas_spent: result.total_gas_spent,
-        refunded: result.refunded,
-        receipt_gas,
-        output: result.output,
-        logs: result.logs,
-        created_address: result.created_address,
-        state_root: state::root(&state::snapshot(db)),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +117,7 @@ mod tests {
                 chain: MonadChainContext::default(),
             };
             // PUSH0 + POP costs four gas. REVERT has no additional opcode cost.
-            for (code, limit, status, consumed) in [
+            for (code, limit, expected_status, consumed) in [
                 ("00", 80_000, "success", 21_000),
                 ("5f5000", 21_003, "halt", 21_003),
                 ("5f5000", 21_004, "success", 21_004),
@@ -144,10 +136,10 @@ mod tests {
                 let tx =
                     TxEnvelope::from(tx.into_signed(Signature::new(U256::ONE, U256::ONE, false)));
                 let result =
-                    actual(&mut db, &context, &Request::Transaction { tx: &tx, sender }).unwrap();
-                assert_eq!(result.status, status, "{spec:?} {code} {limit}");
-                assert_eq!(result.gas_spent, consumed, "{spec:?} {code} {limit}");
-                assert_eq!(result.receipt_gas, Some(limit));
+                    execute(&mut db, &context, &Request::Transaction { tx: &tx, sender }).unwrap();
+                assert_eq!(status(&result), expected_status, "{spec:?} {code} {limit}");
+                assert_eq!(result.total_gas_spent, consumed, "{spec:?} {code} {limit}");
+                assert_eq!(result.ext.charged_gas, limit);
                 assert_eq!(result.refunded, 0);
                 assert!(result.output.is_empty());
                 assert!(result.logs.is_empty());
