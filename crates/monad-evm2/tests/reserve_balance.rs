@@ -1,4 +1,4 @@
-//! Reserve-balance policies and thresholds with optional reference comparisons.
+//! Reserve-balance policies and thresholds.
 
 mod common;
 
@@ -11,37 +11,8 @@ use monad_evm2::{
     reserve_balance::{DEFAULT_RESERVE_BALANCE, ReserveBalanceTracker},
 };
 
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{
-    MonadChainContext as ReferenceChainContext,
-    reserve_balance::tracker::{
-        ReserveBalanceInit as ReferenceInit, ReserveBalanceTracker as ReferenceTracker,
-    },
-};
-#[cfg(feature = "compare-monad-revm")]
-use revm::state::{Account, AccountInfo};
-
 const SENDER: Address = Address::repeat_byte(0x11);
 const OTHER: Address = Address::repeat_byte(0x22);
-
-#[cfg(feature = "compare-monad-revm")]
-fn reference(chain: &MonadChainContext) -> ReferenceChainContext {
-    ReferenceChainContext {
-        parent_senders_and_authorities: chain.parent_senders_and_authorities.clone(),
-        grandparent_senders_and_authorities: chain.grandparent_senders_and_authorities.clone(),
-        current_block_senders: chain.current_block_senders.clone(),
-        current_block_authorities: chain.current_block_authorities.clone(),
-        current_tx_index: chain.current_tx_index,
-        max_reserve_balance: chain.max_reserve_balance,
-    }
-}
-
-#[cfg(feature = "compare-monad-revm")]
-fn reference_account(original_balance: U256, balance: U256) -> Account {
-    let mut account = Account::from(AccountInfo::default().with_balance(original_balance));
-    account.info.balance = balance;
-    account
-}
 
 #[test]
 fn reserve_policy_defaults_and_overrides() {
@@ -53,23 +24,12 @@ fn reserve_policy_defaults_and_overrides() {
     assert!(actual.grandparent_senders_and_authorities.is_empty());
     assert_eq!(actual.max_reserve_balance, DEFAULT_RESERVE_BALANCE);
     assert_eq!(default_max_reserve_balance(), DEFAULT_RESERVE_BALANCE);
-    #[cfg(feature = "compare-monad-revm")]
-    assert_eq!(reference(&actual), ReferenceChainContext::default());
     assert_eq!(DEFAULT_RESERVE_BALANCE, U256::from(10_000_000_000_000_000_000u64));
-    #[cfg(feature = "compare-monad-revm")]
-    assert_eq!(DEFAULT_RESERVE_BALANCE, monad_revm::reserve_balance::abi::DEFAULT_RESERVE_BALANCE);
-    #[cfg(feature = "compare-monad-revm")]
-    assert_eq!(default_max_reserve_balance(), monad_revm::chain::default_max_reserve_balance());
 
     for cap in [U256::ZERO, U256::ONE, DEFAULT_RESERVE_BALANCE, U256::MAX] {
         let chain = MonadChainContext { max_reserve_balance: cap, ..Default::default() };
         for address in [Address::ZERO, SENDER, OTHER] {
             assert_eq!(chain.max_reserve_balance(address), cap);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_eq!(
-                chain.max_reserve_balance(address),
-                reference(&chain).max_reserve_balance(address)
-            );
         }
     }
 }
@@ -123,15 +83,7 @@ fn sender_eligibility_respects_history_and_delegation() {
                 }
                 for index in [0, 1, 2, 3, usize::MAX] {
                     chain.current_tx_index = index;
-                    #[cfg(feature = "compare-monad-revm")]
-                    let expected = reference(&chain);
                     for delegated in [false, true] {
-                        #[cfg(feature = "compare-monad-revm")]
-                        assert_eq!(
-                            chain.sender_can_dip(SENDER, delegated),
-                            expected.sender_can_dip(SENDER, delegated),
-                            "pending={pending} senders={senders} authorities={authorities} index={index} delegated={delegated}"
-                        );
                         let previous = (1 << index.min(3)) - 1;
                         let through_current = (1 << index.saturating_add(1).min(3)) - 1;
                         let eligible = !delegated
@@ -164,11 +116,6 @@ fn partial_history_does_not_index_missing_entries() {
                 let appeared = chain.current_block_senders.contains(&sender)
                     || chain.current_block_authorities.iter().flatten().any(|a| *a == sender);
                 assert_eq!(chain.sender_can_dip(sender, false), !appeared);
-                #[cfg(feature = "compare-monad-revm")]
-                assert_eq!(
-                    chain.sender_can_dip(sender, false),
-                    reference(&chain).sender_can_dip(sender, false)
-                );
             }
         }
     }
@@ -186,8 +133,6 @@ fn original_balance_sets_the_reserve_baseline_across_debits_and_credits() {
     ];
     for cap in [U256::ZERO, U256::ONE, DEFAULT_RESERVE_BALANCE, U256::MAX] {
         let chain = MonadChainContext { max_reserve_balance: cap, ..Default::default() };
-        #[cfg(feature = "compare-monad-revm")]
-        let reference_chain = reference(&chain);
         for original_balance in originals {
             let mut view = ReserveAccount { original_balance, ..Default::default() };
             let reserve = original_balance.min(cap);
@@ -217,26 +162,6 @@ fn original_balance_sets_the_reserve_baseline_across_debits_and_credits() {
                         balance < reserve,
                         "spec={spec:?} cap={cap} original={original_balance} current={balance}"
                     );
-                    #[cfg(feature = "compare-monad-revm")]
-                    {
-                        let mut tracker = ReferenceTracker::default();
-                        tracker.init(ReferenceInit {
-                            chain: &reference_chain,
-                            spec: common::reference_spec(spec),
-                            sender: SENDER,
-                            effective_gas_price: 0,
-                            gas_limit: 0,
-                            sender_is_delegated: false,
-                            sender_account: None,
-                        });
-                        tracker
-                            .on_debit(Some(&reference_account(original_balance, balance)), OTHER);
-                        assert_eq!(
-                            balance < reserve,
-                            tracker.has_violation(),
-                            "spec={spec:?} cap={cap} original={original_balance} current={balance}"
-                        );
-                    }
                 }
             }
         }
@@ -276,11 +201,7 @@ fn sender_fee_allowance_has_an_exact_violation_threshold() {
         max_reserve_balance: U256::MAX,
         ..Default::default()
     };
-    #[cfg(feature = "compare-monad-revm")]
-    let reference_chain = reference(&chain);
     for spec in FORKS {
-        #[cfg(feature = "compare-monad-revm")]
-        let reference_spec = common::reference_spec(spec);
         for (price, gas_limit) in [(0, 0), (7, 21_000), (u128::MAX, u64::MAX)] {
             let mut sender = ReserveAccount { original_balance: U256::MAX, ..Default::default() };
             let init = ReserveBalanceInit {
@@ -299,23 +220,6 @@ fn sender_fee_allowance_has_an_exact_violation_threshold() {
                 let mut tracker = ReserveBalanceTracker::default();
                 tracker.init(ReserveBalanceInit { sender_account: Some(&sender), ..init });
                 assert_eq!(tracker.has_violation(), !shortfall.is_zero());
-                #[cfg(feature = "compare-monad-revm")]
-                {
-                    let mut tracker = ReferenceTracker::default();
-                    tracker.init(ReferenceInit {
-                        chain: &reference_chain,
-                        spec: reference_spec,
-                        sender: SENDER,
-                        effective_gas_price: price,
-                        gas_limit,
-                        sender_is_delegated: false,
-                        sender_account: Some(&reference_account(
-                            sender.original_balance,
-                            sender.balance,
-                        )),
-                    });
-                    assert_eq!(tracker.has_violation(), !shortfall.is_zero());
-                }
             }
         }
     }

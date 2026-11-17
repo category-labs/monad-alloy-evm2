@@ -185,8 +185,8 @@ impl Inspector<MonadEvmTypes> for Trace {
         let depth = usize::from(interp.message().depth);
         if let Some(pending) = self.pending.get_mut(depth).and_then(Option::take) {
             let step = &mut self.steps[pending.index];
-            // revm reports CALL/CREATE before the child runs. Keep that gas convention
-            // while evm2's step_end runs after the child has returned.
+            // Report CALL/CREATE gas before the child runs; evm2's step_end runs
+            // after the child has returned.
             step.gas_cost = step
                 .gas
                 .saturating_sub(pending.gas_before_child.unwrap_or(interp.gas().remaining()));

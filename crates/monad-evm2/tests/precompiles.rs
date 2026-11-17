@@ -1,4 +1,4 @@
-//! Cryptographic precompile vectors, gas boundaries and optional reference comparisons.
+//! Cryptographic precompile vectors and gas boundaries.
 
 mod common;
 
@@ -19,11 +19,6 @@ use monad_evm2::{
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
-
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::precompiles::MonadPrecompiles as ReferencePrecompiles;
-#[cfg(feature = "compare-monad-revm")]
-use revm::precompile::PrecompileStatus;
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const CONTRACT: Address = Address::repeat_byte(0x22);
@@ -107,11 +102,7 @@ fn transact(
 fn cryptographic_addresses_are_registered_and_prewarmed() {
     let expected = (1..=0x11).chain([0x100]).map(address).collect::<BTreeSet<_>>();
     for spec in FORKS {
-        #[cfg(feature = "compare-monad-revm")]
-        let reference_spec = common::reference_spec(spec);
         let provider = monad_precompiles(spec);
-        #[cfg(feature = "compare-monad-revm")]
-        let reference = ReferencePrecompiles::new_with_spec(reference_spec);
         let mut all_addresses = expected.clone();
         all_addresses.insert(address(0x1000));
         if spec >= MonadHardfork::MonadNine {
@@ -120,12 +111,6 @@ fn cryptographic_addresses_are_registered_and_prewarmed() {
         assert_eq!(
             provider.addresses().into_iter().collect::<BTreeSet<_>>(),
             all_addresses,
-            "{spec}"
-        );
-        #[cfg(feature = "compare-monad-revm")]
-        assert_eq!(
-            reference.precompiles().addresses().copied().collect::<BTreeSet<_>>(),
-            expected,
             "{spec}"
         );
         let mut warm = PrewarmSet::new();
@@ -146,15 +131,9 @@ fn cryptographic_addresses_are_registered_and_prewarmed() {
 #[test]
 fn known_answers_and_gas_boundaries() {
     for spec in FORKS {
-        #[cfg(feature = "compare-monad-revm")]
-        let reference_spec = common::reference_spec(spec);
         let mut evm = evm(spec);
         let mut provider = monad_precompiles(spec);
-        #[cfg(feature = "compare-monad-revm")]
-        let reference = ReferencePrecompiles::new_with_spec(reference_spec);
         for vector in vectors() {
-            #[cfg(feature = "compare-monad-revm")]
-            let precompile = reference.precompiles().get(&address(vector.address)).unwrap();
             for limit in [0, vector.gas - 1, vector.gas, vector.gas + 123] {
                 let label = format!("{spec}/{}/{limit}", vector.name);
                 let (actual, gas) = run_precompile(
@@ -164,19 +143,11 @@ fn known_answers_and_gas_boundaries() {
                     vector.input.clone(),
                     limit,
                 );
-                #[cfg(feature = "compare-monad-revm")]
-                let expected = precompile.execute(&vector.input, limit, 0).unwrap();
-                #[cfg(feature = "compare-monad-revm")]
-                assert_eq!(actual.is_ok(), expected.status.is_success(), "{label}");
                 assert_eq!(actual.is_ok(), vector.success && limit >= vector.gas, "{label}");
                 match actual {
                     Ok(output) => {
                         assert_eq!(output.bytes(), vector.output.as_ref(), "{label}");
-                        #[cfg(feature = "compare-monad-revm")]
-                        assert_eq!(output.bytes(), expected.bytes.as_ref(), "{label}");
                         assert_eq!(gas.spent(), vector.gas, "{label}");
-                        #[cfg(feature = "compare-monad-revm")]
-                        assert_eq!(gas.spent(), expected.gas_used, "{label}");
                     }
                     Err(error) => {
                         assert!(error.as_halt().is_some(), "{label}: {error:?}");
@@ -184,12 +155,6 @@ fn known_answers_and_gas_boundaries() {
                             assert!(error.is_oog(), "{label}: {error:?}");
                         }
                         // The engines expose separate types for the same precompile halt reasons.
-                        #[cfg(feature = "compare-monad-revm")]
-                        assert_eq!(
-                            format!("{:?}", error.as_halt().expect("non-fatal halt")),
-                            format!("{:?}", expected.status.halt_reason().unwrap()),
-                            "{label}"
-                        );
                     }
                 }
             }
@@ -288,29 +253,8 @@ fn modexp_input(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Bytes {
 }
 
 fn compare_modexp(spec: MonadHardfork, input: Bytes, limit: u64) -> (PrecompileResult, GasTracker) {
-    #[cfg(feature = "compare-monad-revm")]
-    let expected = ReferencePrecompiles::new_with_spec(common::reference_spec(spec))
-        .precompiles()
-        .get(&address(5))
-        .unwrap()
-        .execute(&input, limit, 0)
-        .unwrap();
     let mut evm = evm(spec);
     let (actual, gas) = run_precompile(&mut evm, &mut monad_precompiles(spec), 5, input, limit);
-    #[cfg(feature = "compare-monad-revm")]
-    {
-        match &actual {
-            Ok(output) => {
-                assert_eq!(expected.status, PrecompileStatus::Success);
-                assert_eq!(output.bytes(), expected.bytes.as_ref());
-                assert_eq!(gas.spent(), expected.gas_used);
-            }
-            Err(error) => assert_eq!(
-                format!("{:?}", error.as_halt().unwrap()),
-                format!("{:?}", expected.status.halt_reason().unwrap()),
-            ),
-        }
-    }
     (actual, gas)
 }
 

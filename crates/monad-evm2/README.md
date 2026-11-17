@@ -82,8 +82,8 @@ hardfork selection, and synthetic state handling. For fork switches, use the
 [System calls](src/system.rs) and [trusted protocol replay](src/protocol.rs)
 provide staking lifecycle execution.
 
-Validator registration retains monad-revm 0.8.0's unverified signatures and
-simplified public-key identifiers.
+Validator registration does not verify signatures and uses simplified public-key
+identifiers.
 
 ## Cargo features
 
@@ -96,8 +96,6 @@ simplified public-key identifiers.
 | `blst` | BLST backend. | Yes |
 | `portable` | Portable KZG and BLST builds. | Yes |
 | `memory_limit` | Compatibility flag; memory limits always apply. | No |
-| `compare-monad-revm` | Development tests against monad-revm 0.8.0. | No |
-| `compare-monad-revm-main` | Extension parity against a pinned monad-revm main commit. | No |
 
 Memory is shared by active frames and capped at 8 MiB from MonadNine onward.
 Disable default features for `no_std` builds.
@@ -116,21 +114,11 @@ cargo fmt --all -- --check
 cargo doc --locked -p monad-evm2 --no-deps --features serde --open
 ```
 
-Default tests check protocol behavior, execution gas, receipt charges, and rollback
-without compiling monad-revm or revm. Add the optional comparison checks with:
-
-```sh
-cargo test --locked -p monad-evm2 --features compare-monad-revm
-cargo test --locked -p monad-evm2 --features compare-monad-revm-main --test extensions
-```
-
-`--all-features` also enables these comparisons. They retain documented differences
-from the reference; they do not override protocol expectations. CI runs independent
-checks and extension parity on pushes and pull requests. The manual
-[Reference comparisons workflow](../../.github/workflows/reference.yml) runs the
-reference audit for both crates. CI also checks that the runtime and macro revisions
-match Foundry master's effective evm2 pins. Dependency updates must retain that
-alignment and pass Foundry's Monad integration tests.
+Tests check protocol behavior, execution gas, receipt charges, and rollback against
+explicit expectations. CI runs these checks, fixture replay, and native/WASM
+comparisons on pushes and pull requests. CI also checks that runtime and macro
+revisions match Foundry master's effective evm2 pins. Dependency updates must retain
+that alignment and pass Foundry's Monad integration tests.
 
 Check without the standard library:
 

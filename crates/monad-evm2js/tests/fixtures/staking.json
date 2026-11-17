@@ -478,7 +478,8 @@
             }
           },
           "result": {
-            "success": false
+            "success": false,
+            "gasSpent": 30000000
           },
           "logCount": 0
         },
@@ -505,7 +506,8 @@
             }
           },
           "result": {
-            "success": false
+            "success": false,
+            "gasSpent": 30000000
           },
           "logCount": 0
         },
@@ -519,7 +521,8 @@
             }
           },
           "result": {
-            "success": false
+            "success": false,
+            "gasSpent": 30000000
           },
           "logCount": 0
         },
@@ -533,7 +536,8 @@
             }
           },
           "result": {
-            "success": false
+            "success": false,
+            "gasSpent": 30000000
           },
           "logCount": 0
         }

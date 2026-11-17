@@ -21,19 +21,6 @@ use monad_evm2::{
     MonadTxEnvelope,
 };
 
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{
-    MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,
-};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    ExecuteEvm,
-    context::{BlockEnv, TxEnv},
-    context_interface::result::{ExecutionResult, HaltReason},
-    database::InMemoryDB as ReferenceDB,
-    state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
-};
-
 const SENDER: Address = Address::repeat_byte(0x11);
 const AUTHORITY: Address = Address::repeat_byte(0x22);
 const CODE: Address = Address::repeat_byte(0x33);
@@ -151,58 +138,6 @@ fn account(evm: &mut MonadEvm<'_>, address: Address) -> AccountInfo {
     evm.state_mut().account_info_untracked(&address).unwrap().unwrap_or_default()
 }
 
-#[cfg(feature = "compare-monad-revm")]
-fn reference(
-    spec: ReferenceHardfork,
-    contracts: &[(Address, Bytecode)],
-    tx: &TxLegacy,
-) -> ExecutionResult {
-    let mut db = ReferenceDB::default();
-    db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(BALANCE)));
-    for (address, code) in contracts {
-        db.insert_account_info(
-            *address,
-            ReferenceAccount::default()
-                .with_balance(U256::from(BALANCE))
-                .with_code(ReferenceBytecode::new_raw(code.original_bytes())),
-        );
-    }
-    let mut evm = monad_context_with_db(db)
-        .with_cfg(MonadCfgEnv::new_with_spec(spec).with_chain_id(MONAD_MAINNET_CHAIN_ID))
-        .with_block(BlockEnv { basefee: 0, ..Default::default() })
-        .build_monad();
-    let tx = TxEnv::builder()
-        .caller(SENDER)
-        .nonce(tx.nonce)
-        .kind(tx.to)
-        .value(tx.value)
-        .data(tx.input.clone())
-        .chain_id(tx.chain_id)
-        .gas_limit(tx.gas_limit)
-        .gas_price(tx.gas_price)
-        .build()
-        .unwrap();
-    evm.transact(tx).unwrap().result
-}
-
-#[cfg(feature = "compare-monad-revm")]
-fn assert_matches_release(
-    forks: MonadHardfork,
-    contracts: &[(Address, Bytecode)],
-    tx: &TxLegacy,
-    actual: &TxResult<MonadEvmTypes>,
-) {
-    let expected = reference(common::reference_spec(forks), contracts, tx);
-    assert_eq!(actual.is_success(), expected.is_success(), "{forks:?}: {expected:?}");
-    assert_eq!(
-        actual.is_revert(),
-        matches!(expected, ExecutionResult::Revert { .. }),
-        "{forks:?}: {expected:?}"
-    );
-    assert_eq!(actual.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
-    assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
-}
-
 fn code(bytes: impl Into<Bytes>) -> Bytecode {
     Bytecode::new_legacy(bytes.into())
 }
@@ -296,8 +231,6 @@ fn delegated_root_context_and_inspector_inputs_match_execution() {
     for forks in FORKS {
         let tx = TxLegacy { value: U256::from(7), ..legacy(AUTHORITY) };
         let actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-        #[cfg(feature = "compare-monad-revm")]
-        assert_matches_release(forks, &contracts, &tx, &actual.result);
         assert_eq!(actual.result.output, context_output(AUTHORITY, SENDER, 7));
         let message = &actual.trace.calls[0];
         assert_eq!(
@@ -325,8 +258,6 @@ fn nested_calls_keep_callee_context_and_code_addresses_distinct() {
             ];
             let tx = TxLegacy { value: U256::from(7), ..legacy(PROXY) };
             let mut actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_matches_release(forks, &contracts, &tx, &actual.result);
             let destination =
                 if matches!(opcode, op::CALLCODE | op::DELEGATECALL) { PROXY } else { AUTHORITY };
             let caller = if opcode == op::DELEGATECALL { SENDER } else { PROXY };
@@ -369,8 +300,6 @@ fn delegated_storage_writes_use_the_execution_context() {
             ];
             let tx = legacy(PROXY);
             let mut actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_matches_release(forks, &contracts, &tx, &actual.result);
             let destination = if opcode == op::CALL { AUTHORITY } else { PROXY };
             for address in [AUTHORITY, CODE, PROXY] {
                 let expected =
@@ -399,11 +328,6 @@ fn create_and_create2_halt_in_a_delegated_context_without_changing_nonce() {
             let mut actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
             assert_eq!(actual.result.stop, InstrStop::NotActivated);
             assert_eq!(actual.result.total_gas_spent, TX_GAS);
-            #[cfg(feature = "compare-monad-revm")]
-            assert!(matches!(
-                reference(common::reference_spec(forks), &contracts, &tx),
-                ExecutionResult::Halt { reason: HaltReason::NotActivated, .. }
-            ));
             assert_eq!(account(&mut actual.evm, AUTHORITY).nonce, 0);
             assert_eq!(account(&mut actual.evm, CODE).nonce, 0);
             assert!(actual.trace.creates.is_empty());
@@ -436,8 +360,6 @@ fn creation_checks_the_storage_context_across_all_call_kinds() {
                     let tx = legacy(AUTHORITY);
                     let mut actual =
                         execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-                    #[cfg(feature = "compare-monad-revm")]
-                    assert_matches_release(forks, &contracts, &tx, &actual.result);
                     let allowed = opcode == op::CALL || (!delegated && opcode != op::STATICCALL);
                     let label =
                         format!("{forks:?}/create2={create2}/{kind:?}/delegated={delegated}");
@@ -495,8 +417,6 @@ fn ordinary_context_can_create_using_code_from_a_delegated_callee() {
                 let tx = legacy(PROXY);
                 let mut actual =
                     execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-                #[cfg(feature = "compare-monad-revm")]
-                assert_matches_release(forks, &contracts, &tx, &actual.result);
                 assert!(actual.result.is_success());
                 assert_eq!(&actual.result.output[..32], U256::ONE.to_be_bytes::<32>());
                 assert_eq!(account(&mut actual.evm, PROXY).nonce, 1);
@@ -520,8 +440,6 @@ fn creation_guard_preserves_static_error_precedence_and_rolls_back_child_state()
             ];
             let tx = legacy(PROXY);
             let actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_matches_release(forks, &contracts, &tx, &actual.result);
             assert_eq!(actual.trace.call_ends[0].1.stop, InstrStop::StateChangeDuringStaticCall);
 
             // A delegated context is rejected before attempting to pop CREATE operands.
@@ -532,8 +450,6 @@ fn creation_guard_preserves_static_error_precedence_and_rolls_back_child_state()
             contracts[1].1 = code(vec![op::PUSH1, 42, op::PUSH0, op::SSTORE, opcode]);
             contracts[2].1 = forward(AUTHORITY, op::CALL, CALL_GAS, 13);
             let mut actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_matches_release(forks, &contracts, &tx, &actual.result);
             assert_eq!(actual.trace.call_ends[0].1.stop, InstrStop::NotActivated);
             assert_eq!(account(&mut actual.evm, AUTHORITY).balance, U256::from(BALANCE));
             assert_eq!(
@@ -556,8 +472,6 @@ fn delegation_is_resolved_once_and_empty_targets_succeed() {
             ];
             let tx = legacy(AUTHORITY);
             let actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_matches_release(forks, &contracts, &tx, &actual.result);
             assert_eq!(actual.result.is_success(), target == Address::ZERO);
             assert_eq!(actual.trace.calls.len(), 1);
             assert_eq!(actual.trace.calls[0].code_address, target);
@@ -610,16 +524,8 @@ fn direct_precompile_dispatch_is_distinct_from_delegation() {
             let contracts = [(AUTHORITY, Bytecode::new_eip7702(target))];
             let tx = TxLegacy { input: Bytes::from_static(b"hello"), ..legacy(AUTHORITY) };
             let actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-            #[cfg(feature = "compare-monad-revm")]
-            let buggy = reference(common::reference_spec(forks), &contracts, &tx);
-            // The release incorrectly invokes the delegated precompile. Corrected by
-            // monad-revm commit 42d2cc57a95ed9e060123ba1bb4e7b4d827b5eb0.
+            // Delegation to a precompile does not invoke its native implementation.
             assert_eq!(actual.result.total_gas_spent, 21_080);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_eq!(
-                buggy.gas().total_gas_spent(),
-                21_080 + if target == identity { 18 } else { 6_000 }
-            );
             let direct = execute(
                 forks,
                 &[],
@@ -637,11 +543,6 @@ fn direct_precompile_dispatch_is_distinct_from_delegation() {
                 direct.result.output.as_ref(),
                 if target == identity { b"hello".as_slice() } else { &[] }
             );
-            #[cfg(feature = "compare-monad-revm")]
-            {
-                assert_eq!(direct.result.total_gas_spent, buggy.gas().total_gas_spent());
-                assert_eq!(direct.result.output.as_ref(), buggy.output().unwrap().as_ref());
-            }
         }
     }
 }
@@ -698,8 +599,6 @@ fn delegated_sender_can_still_originate_a_contract_creation_transaction() {
         let tx =
             TxLegacy { to: TxKind::Create, input: Bytes::from_static(&[op::STOP]), ..legacy(CODE) };
         let actual = execute(forks, &contracts, MonadTxEnvelope::Legacy(tx.clone()), true);
-        #[cfg(feature = "compare-monad-revm")]
-        assert_matches_release(forks, &contracts, &tx, &actual.result);
         assert!(actual.result.is_success());
         assert_eq!(actual.trace.creates.len(), 1);
         assert_eq!(actual.trace.creates[0].caller, SENDER);

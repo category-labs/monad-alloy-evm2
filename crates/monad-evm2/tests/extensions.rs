@@ -1,4 +1,4 @@
-//! MIP-7/MIP-18 protocol cases, with optional parity against pinned monad-revm main.
+//! MIP-7/MIP-18 protocol, gas and inspection boundaries.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
@@ -91,8 +91,6 @@ fn execute(
     native: bool,
     inspect: bool,
 ) -> Outcome {
-    #[cfg(feature = "compare-monad-revm-main")]
-    let expected = reference::execute(spec, accounts, tx.clone(), inspect);
     let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), SENDER);
     let mut trace = Trace::default();
     let result = if native {
@@ -120,10 +118,7 @@ fn execute(
             evm.transact(&envelope).unwrap().commit()
         }
     };
-    let actual = Outcome::new(result, trace);
-    #[cfg(feature = "compare-monad-revm-main")]
-    assert_eq!(actual, expected, "{spec} native={native}");
-    actual
+    Outcome::new(result, trace)
 }
 
 fn modes() -> impl Iterator<Item = (bool, bool)> {
@@ -687,93 +682,6 @@ fn transaction_reuse_and_nonzero_initial_depth_do_not_expose_stale_callers() {
                 assert_eq!(words[9], U256::from_be_slice(SENDER.as_slice()));
                 assert_eq!(words[10], U256::from_be_slice(SENDER.as_slice()));
             }
-        }
-    }
-}
-
-#[cfg(feature = "compare-monad-revm-main")]
-mod reference {
-    use super::*;
-    use monad_revm_main::{MonadBuilder, MonadCfgEnv, MonadHaltReason, monad_context_with_db};
-    use revm::{
-        ExecuteEvm,
-        context::{
-            TxEnv,
-            result::{ExecutionResult, HaltReason},
-        },
-        inspector::InspectEvm,
-        interpreter::{
-            Interpreter as RevmInterpreter,
-            interpreter_types::{InputsTr, Jumps},
-        },
-        state::{AccountInfo as RevmAccount, Bytecode as RevmCode},
-    };
-
-    impl<CTX: revm::context_interface::ContextTr> revm::Inspector<CTX> for Trace {
-        fn step(&mut self, interp: &mut RevmInterpreter, _: &mut CTX) {
-            self.0.push((
-                interp.input.depth(),
-                interp.bytecode.pc(),
-                interp.bytecode.opcode(),
-                interp.stack.data().to_vec(),
-            ));
-        }
-    }
-
-    pub(super) fn execute(
-        spec: MonadHardfork,
-        accounts: &[(Address, Vec<u8>)],
-        tx: TxLegacy,
-        inspect: bool,
-    ) -> Outcome {
-        let mut db = revm::database::InMemoryDB::default();
-        db.insert_account_info(
-            SENDER,
-            RevmAccount { balance: U256::from(10).pow(U256::from(27)), ..Default::default() },
-        );
-        for (address, code) in accounts {
-            db.insert_account_info(
-                *address,
-                RevmAccount::default().with_code(RevmCode::new_raw(Bytes::copy_from_slice(code))),
-            );
-        }
-        let cfg =
-            MonadCfgEnv::new_with_spec(spec.to_string().parse().unwrap()).with_chain_id(CHAIN_ID);
-        let mut evm =
-            monad_context_with_db(db).with_cfg(cfg).build_monad_with_inspector(Trace::default());
-        let mut request = TxEnv::builder()
-            .caller(SENDER)
-            .gas_limit(tx.gas_limit)
-            .gas_price(tx.gas_price)
-            .nonce(tx.nonce)
-            .chain_id(tx.chain_id)
-            .data(tx.input);
-        request = match tx.to {
-            TxKind::Create => request.create(),
-            TxKind::Call(address) => request.to(address),
-        };
-        let request = request.build_fill();
-        let result =
-            if inspect { evm.inspect_tx(request) } else { evm.transact(request) }.unwrap().result;
-        let status = match &result {
-            ExecutionResult::Success { reason, .. } => format!("{reason:?}"),
-            ExecutionResult::Revert { .. } => "Revert".into(),
-            ExecutionResult::Halt {
-                reason: MonadHaltReason::Ethereum(HaltReason::OutOfGas(_)),
-                ..
-            } => "OutOfGas".into(),
-            ExecutionResult::Halt { reason: MonadHaltReason::Ethereum(reason), .. } => {
-                format!("{reason:?}")
-            }
-            other => panic!("unexpected reference result: {other:?}"),
-        };
-        Outcome {
-            status,
-            output: result.output().cloned().unwrap_or_default(),
-            created: result.created_address(),
-            spent: result.gas().total_gas_spent(),
-            charged: result.tx_gas_used(),
-            steps: evm.0.inspector.0,
         }
     }
 }
