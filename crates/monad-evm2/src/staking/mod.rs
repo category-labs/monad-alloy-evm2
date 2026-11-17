@@ -1,6 +1,6 @@
 //! Monad staking queries and journaled storage at address 0x1000.
 //!
-//! Validator registration follows monad-revm 0.8.0: it does not verify signatures
+//! Validator registration does not verify signatures
 //! and uses simplified public-key lookup identifiers. It is not equivalent to
 //! validator admission in the C++ consensus client.
 

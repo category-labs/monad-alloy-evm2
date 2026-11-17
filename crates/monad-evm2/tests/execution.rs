@@ -1,4 +1,4 @@
-//! Contract execution with independent expectations and optional reference comparisons.
+//! Contract execution with independent protocol expectations.
 
 mod common;
 
@@ -15,17 +15,6 @@ use evm2::{
 use monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID, MonadBlockEnv, MonadEvmBuilder, MonadEvmTypes,
     MonadHardfork, MonadTxEnvelope,
-};
-
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    ExecuteEvm,
-    context::{BlockEnv, TxEnv},
-    context_interface::result::{ExecutionResult, HaltReason},
-    database::InMemoryDB as ReferenceDB,
-    state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
 
 const CALLER: Address = Address::new([0x11; 20]);
@@ -65,56 +54,12 @@ fn run_contract(
     let tx = legacy_call(100_000);
     let number = U256::from(BLOCK_NUMBER);
 
-    #[cfg(feature = "compare-monad-revm")]
-    let expected = {
-        let mut db = ReferenceDB::default();
-        db.insert_account_info(
-            CALLER,
-            ReferenceAccount::default().with_balance(CALLER_BALANCE).with_nonce(CALLER_NONCE),
-        );
-        db.insert_account_info(
-            CONTRACT,
-            ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
-        );
-        let mut reference = monad_context_with_db(db)
-            .with_cfg(
-                MonadCfgEnv::new_with_spec(common::reference_spec(spec)).with_chain_id(chain_id),
-            )
-            .with_block(BlockEnv { number, ..Default::default() })
-            .build_monad();
-        let reference_tx = TxEnv::builder()
-            .caller(CALLER)
-            .nonce(tx.nonce)
-            .kind(tx.to)
-            .gas_limit(tx.gas_limit)
-            .gas_price(tx.gas_price)
-            .chain_id(tx.chain_id)
-            .value(tx.value)
-            .data(tx.input.clone())
-            .build()
-            .unwrap();
-        reference.transact(reference_tx).unwrap().result
-    };
-
     let block = MonadBlockEnv { number, ..Default::default() };
     let mut evm = MonadEvmBuilder::new(chain_id).create_evm(spec, block, evm2_db(code));
     assert_eq!(evm.config_spec_id(), spec);
     assert_eq!(evm.spec_id(), spec.into_eth_spec());
     let envelope = Recovered::new_unchecked(MonadTxEnvelope::Legacy(tx), CALLER);
-    let actual = evm.call_tx(&envelope).unwrap();
-    #[cfg(feature = "compare-monad-revm")]
-    {
-        assert_eq!(actual.is_success(), expected.is_success());
-        assert_eq!(actual.output.as_ref(), expected.output().map_or(&[][..], Bytes::as_ref));
-        assert_eq!(actual.total_gas_spent, expected.gas().total_gas_spent());
-        if actual.stop == InstrStop::NotActivated {
-            assert!(matches!(
-                expected,
-                ExecutionResult::Halt { reason: HaltReason::NotActivated, .. }
-            ));
-        }
-    }
-    actual
+    evm.call_tx(&envelope).unwrap()
 }
 
 fn assert_returns(actual: TxResult<MonadEvmTypes>, word: U256) {

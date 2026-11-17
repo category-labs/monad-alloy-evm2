@@ -1,5 +1,5 @@
 {
-  "description": "Deterministic local transaction vectors. Authorizations signed with ethers 6.14.0 using private keys 1 (payer) and 2 (authority). Expected semantics follow EIP-2930, EIP-7702 and monad-revm reserve/delegated-creation rules; bytecode is embedded in the account fixtures. Fork-specific gas expectations include Prague memory expansion (3 * words + words^2 / 512) versus MIP-3 (words / 2), plus instruction base costs.",
+  "description": "Deterministic local transaction vectors. Authorizations signed with ethers 6.14.0 using private keys 1 (payer) and 2 (authority). Expected semantics follow EIP-2930, EIP-7702 and Monad reserve/delegated-creation rules; bytecode is embedded in the account fixtures. Fork-specific gas expectations include Prague memory expansion (3 * words + words^2 / 512) versus MIP-3 (words / 2), plus instruction base costs.",
   "payer": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
   "authority": "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf",
   "accounts": {

@@ -10,7 +10,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
 };
 
-/// Out-of-gas classification for [`PrecompileHalt`], matching revm's `PrecompileHalt::is_oog`.
+/// Out-of-gas classification for [`PrecompileHalt`].
 pub trait PrecompileHaltExt {
     /// Returns whether the halt is an out-of-gas halt.
     fn is_oog(&self) -> bool;

@@ -1,7 +1,7 @@
 # monad-evm2js
 
 Run Monad's evm2 runtime in browsers and Node.js through WebAssembly. The package
-preserves the `monad-revmjs` Engine API, JSON requests, debugger traces and version-1
+provides a local Engine API with JSON requests, debugger traces and version-1
 snapshots for Monad Eight, Nine, Ten and Next.
 
 ```js

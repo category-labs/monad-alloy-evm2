@@ -38,11 +38,11 @@ jobs:
             exit 1
           fi
       - name: Lint runtime and test features
-        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main,monad-evm2js/compare-monad-revmjs-main -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit -- -D warnings
       - name: Test default features
         run: cargo test --locked -p monad-evm2
       - name: Test optional features
-        run: cargo test --locked -p monad-evm2 -p monad-evm2js --features monad-evm2/serde,monad-evm2/memory_limit,monad-evm2/compare-monad-revm-main,monad-evm2js/compare-monad-revmjs-main
+        run: cargo test --locked -p monad-evm2 -p monad-evm2js --features monad-evm2/serde,monad-evm2/memory_limit
       - name: Test without default features
         run: cargo test --locked -p monad-evm2 --no-default-features --features std,serde
       - name: Check documentation

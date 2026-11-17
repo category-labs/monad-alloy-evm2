@@ -1,4 +1,4 @@
-//! Memory pricing, opcode behavior and pooled limits, with optional reference comparisons.
+//! Memory pricing, opcode behavior and pooled limits.
 
 mod common;
 
@@ -15,19 +15,6 @@ use evm2::{
 use monad_evm2::{
     MONAD_MAINNET_CHAIN_ID, MONAD_MEMORY_LIMIT, MonadBlockEnv, MonadEvm, MonadEvmBuilder,
     MonadEvmTypes, MonadHardfork, MonadTxEnvelope, monad_memory_cost,
-};
-
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{
-    MonadBuilder, MonadCfgEnv, MonadHardfork as ReferenceHardfork, monad_context_with_db,
-};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    ExecuteEvm,
-    context::{BlockEnv, TxEnv},
-    context_interface::result::{ExecutionResult, HaltReason, OutOfGasError},
-    database::InMemoryDB as ReferenceDB,
-    state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
 };
 
 const SENDER: Address = Address::repeat_byte(0x11);
@@ -253,67 +240,8 @@ impl Fixture {
         Run { evm, result, trace }
     }
 
-    #[cfg(feature = "compare-monad-revm")]
-    fn reference(&self, spec: ReferenceHardfork) -> ExecutionResult {
-        let mut db = ReferenceDB::default();
-        db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
-        for (address, code) in [(ROOT, self.code.clone())].iter().chain(&self.accounts) {
-            db.insert_account_info(
-                *address,
-                ReferenceAccount::default()
-                    .with_balance(U256::from(GAS))
-                    .with_code(ReferenceBytecode::new_raw(code.clone())),
-            );
-        }
-        let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(MONAD_MAINNET_CHAIN_ID);
-        cfg.0.tx_gas_limit_cap = Some(self.gas);
-        if let Some(limit) = self.memory_limit {
-            cfg.0.memory_limit = limit;
-        }
-        let mut evm = monad_context_with_db(db)
-            .with_cfg(cfg)
-            .with_block(BlockEnv { gas_limit: self.gas, basefee: 0, ..Default::default() })
-            .build_monad();
-        let tx = TxEnv::builder()
-            .caller(SENDER)
-            .kind(TxKind::Call(ROOT))
-            .gas_limit(self.gas)
-            .gas_price(0)
-            .chain_id(None)
-            .data(self.input.clone())
-            .build()
-            .unwrap();
-        evm.transact(tx).unwrap().result
-    }
-
     fn compare(&self, forks: MonadHardfork) -> Run {
         let actual = self.run(forks, true);
-        #[cfg(feature = "compare-monad-revm")]
-        {
-            let expected = self.reference(common::reference_spec(forks));
-            assert_eq!(
-                actual.result.is_success(),
-                expected.is_success(),
-                "{forks:?}: {expected:?}"
-            );
-            assert_eq!(
-                actual.result.is_revert(),
-                matches!(expected, ExecutionResult::Revert { .. })
-            );
-            assert_eq!(
-                actual.result.output.as_ref(),
-                expected.output().map_or(&[][..], Bytes::as_ref)
-            );
-            assert_eq!(actual.result.logs, expected.logs());
-            assert_eq!(
-                actual.result.total_gas_spent,
-                expected.gas().total_gas_spent(),
-                "{forks:?}"
-            );
-            if let ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. } = expected {
-                assert!(actual.result.stop.is_out_of_gas(), "{:?}", actual.result.stop);
-            }
-        }
         let plain = self.run(forks, false);
         assert_eq!(actual.result, plain.result);
         actual
@@ -681,11 +609,6 @@ fn expansion_gas_and_reserved_copy_cost_have_exact_failure_boundaries() {
             let actual = fixture.compare(forks);
             assert_eq!(actual.result.stop, InstrStop::MemoryOOG);
             assert_eq!(actual.trace.steps.iter().find(|s| s.opcode == opcode).unwrap().memory, 0);
-            #[cfg(feature = "compare-monad-revm")]
-            assert!(matches!(
-                fixture.reference(common::reference_spec(forks)),
-                ExecutionResult::Halt { reason: HaltReason::OutOfGas(OutOfGasError::Memory), .. }
-            ));
             fixture.gas = GAS;
         }
     }

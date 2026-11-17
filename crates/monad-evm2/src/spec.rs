@@ -23,7 +23,7 @@
 //! precompiles, transaction validation, and block processing together.
 //!
 //! See [MIP-5] for the Fusaka selection and the [C++ revision traits] for the stable
-//! Monad revision predicates. [`MonadHardfork::MonadNext`] retains the Rust release's
+//! Monad revision predicates. [`MonadHardfork::MonadNext`] defines experimental
 //! development rules and is not an alias for the C++ client's evolving `MONAD_NEXT`.
 //!
 //! [MIP-5]: https://github.com/monad-crypto/MIPs/blob/main/MIPs/MIP-5.md

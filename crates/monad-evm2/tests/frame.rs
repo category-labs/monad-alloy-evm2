@@ -1,7 +1,4 @@
-//! Per-frame fork selection with optional reference comparisons.
-
-#[cfg(feature = "compare-monad-revm")]
-mod common;
+//! Per-frame fork selection and state restoration.
 
 use alloy_consensus::{TxEip2930, TxLegacy, transaction::Recovered};
 use alloy_eips::eip2930::AccessListItem;
@@ -19,22 +16,6 @@ use monad_evm2::{
     frame_hardfork, monad_version,
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
-
-#[cfg(feature = "compare-monad-revm")]
-use alloy_primitives::TxKind;
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{
-    MonadBuilder, MonadCfgEnv, api::default_ctx::MonadContext, monad_context_with_db,
-};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    InspectEvm,
-    context::{BlockEnv, TxEnv},
-    context_interface::result::ExecutionResult,
-    database::InMemoryDB as ReferenceDB,
-    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome},
-    state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
-};
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const ROOT: Address = Address::repeat_byte(0x22);
@@ -141,40 +122,6 @@ impl Inspector<MonadEvmTypes> for Selector {
     }
 }
 
-#[cfg(feature = "compare-monad-revm")]
-struct ReferenceSelector {
-    root: MonadHardfork,
-    child: MonadHardfork,
-    grandchild: Option<MonadHardfork>,
-}
-
-#[cfg(feature = "compare-monad-revm")]
-impl revm::Inspector<MonadContext<ReferenceDB>> for ReferenceSelector {
-    fn call(
-        &mut self,
-        context: &mut MonadContext<ReferenceDB>,
-        inputs: &mut CallInputs,
-    ) -> Option<CallOutcome> {
-        let spec = if inputs.bytecode_address == ROOT {
-            self.root
-        } else if inputs.bytecode_address == GRANDCHILD {
-            self.grandchild.unwrap_or(self.child)
-        } else {
-            self.child
-        };
-        context.cfg = MonadCfgEnv::new_with_spec(common::reference_spec(spec));
-        None
-    }
-    fn create(
-        &mut self,
-        context: &mut MonadContext<ReferenceDB>,
-        _: &mut CreateInputs,
-    ) -> Option<CreateOutcome> {
-        context.cfg = MonadCfgEnv::new_with_spec(common::reference_spec(self.child));
-        None
-    }
-}
-
 fn evm(
     spec: MonadHardfork,
     accounts: &[(Address, Bytes)],
@@ -200,71 +147,21 @@ fn tx() -> Recovered<MonadTxEnvelope> {
     )
 }
 
-fn compare(
+fn execute(
     root: MonadHardfork,
     child: MonadHardfork,
     accounts: &[(Address, Bytes)],
 ) -> (TxResult<MonadEvmTypes>, Selector) {
-    compare_tree(root, child, None, accounts)
+    execute_tree(root, child, None, accounts)
 }
 
-fn compare_tree(
+fn execute_tree(
     root: MonadHardfork,
     child: MonadHardfork,
     grandchild: Option<MonadHardfork>,
     accounts: &[(Address, Bytes)],
 ) -> (TxResult<MonadEvmTypes>, Selector) {
-    compare_with_warmth(root, child, grandchild, accounts, Address::ZERO, vec![])
-}
-
-fn compare_with_warmth(
-    root: MonadHardfork,
-    child: MonadHardfork,
-    grandchild: Option<MonadHardfork>,
-    accounts: &[(Address, Bytes)],
-    beneficiary: Address,
-    access_list: Vec<AccessListItem>,
-) -> (TxResult<MonadEvmTypes>, Selector) {
-    #[cfg(feature = "compare-monad-revm")]
-    let reference_access_list = access_list.clone();
-    let (result, selector) =
-        execute_with_warmth(root, child, grandchild, accounts, beneficiary, access_list);
-    #[cfg(feature = "compare-monad-revm")]
-    {
-        let mut db = ReferenceDB::default();
-        db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(U256::from(GAS)));
-        for (address, code) in accounts {
-            db.insert_account_info(
-                *address,
-                ReferenceAccount::default().with_code(ReferenceBytecode::new_raw(code.clone())),
-            );
-        }
-        let mut reference = monad_context_with_db(db)
-            .with_cfg(MonadCfgEnv::new_with_spec(common::reference_spec(root)).with_chain_id(1))
-            .with_block(BlockEnv { beneficiary, basefee: 0, ..Default::default() })
-            .build_monad_with_inspector(ReferenceSelector { root, child, grandchild });
-        let expected = reference
-            .inspect_one_tx(
-                TxEnv::builder()
-                    .caller(SENDER)
-                    .kind(TxKind::Call(ROOT))
-                    .gas_limit(GAS)
-                    .gas_price(0)
-                    .access_list(reference_access_list.into())
-                    .build_fill(),
-            )
-            .unwrap();
-        assert_eq!(result.is_success(), expected.is_success(), "{root} -> {child}: {expected:?}");
-        assert_eq!(
-            result.output.as_ref(),
-            expected.output().map_or(&[][..], |bytes| bytes.as_ref()),
-            "{root} -> {child}"
-        );
-        if matches!(expected, ExecutionResult::Success { .. }) {
-            assert_eq!(result.logs, *expected.logs());
-        }
-    }
-    (result, selector)
+    execute_with_warmth(root, child, grandchild, accounts, Address::ZERO, vec![])
 }
 
 fn execute_with_warmth(
@@ -370,16 +267,8 @@ fn nested_calls_restore_memory_and_storage_rules_across_all_forks() {
                 for child in MonadHardfork::ALL {
                     let shared = matches!(opcode, op::CALLCODE | op::DELEGATECALL);
                     let retained = shared && stop == op::RETURN;
-                    // The reference tracker misses native warmth from pre-MIP-8 frames.
-                    // Assert the protocol gas costs directly for that transition.
-                    let (_, trace) = if retained
-                        && root >= MonadHardfork::MonadTen
-                        && child < MonadHardfork::MonadTen
-                    {
-                        execute_with_warmth(root, child, None, &accounts, Address::ZERO, vec![])
-                    } else {
-                        compare(root, child, &accounts)
-                    };
+                    // Storage warmed before MIP-8 remains warm after switching forks.
+                    let (_, trace) = execute(root, child, &accounts);
                     assert_eq!(
                         trace.read_costs,
                         [
@@ -423,7 +312,7 @@ fn clz_activation_belongs_to_each_frame() {
                     op::RETURN,
                 ]);
                 let (result, trace) =
-                    compare(root, child, &[(ROOT, parent.into()), (CHILD, child_code)]);
+                    execute(root, child, &[(ROOT, parent.into()), (CHILD, child_code)]);
                 assert_eq!(result.is_success(), !parent_clz || root >= MonadHardfork::MonadNine);
                 assert_eq!(trace.ends[0].2.is_success(), child >= MonadHardfork::MonadNine);
             }
@@ -439,7 +328,7 @@ fn immediate_precompiles_follow_child_rules_and_restore_the_parent() {
         finish_parent(&mut parent);
         for root in MonadHardfork::ALL {
             for child in MonadHardfork::ALL {
-                let (_, trace) = compare(root, child, &[(ROOT, Bytes::copy_from_slice(&parent))]);
+                let (_, trace) = execute(root, child, &[(ROOT, Bytes::copy_from_slice(&parent))]);
                 assert_eq!(trace.ends[0].1, child);
                 assert_eq!(trace.steps.last(), Some(&(0, root)));
             }
@@ -466,7 +355,7 @@ fn reserve_precompile_activation_and_contract_fallback_follow_the_child() {
     let accounts = [(ROOT, parent.into()), (target, fallback)];
     for root in MonadHardfork::ALL {
         for child in MonadHardfork::ALL {
-            let (result, trace) = compare(root, child, &accounts);
+            let (result, trace) = execute(root, child, &accounts);
             assert!(result.is_success());
             // Empty calldata reverts in the precompile and returns 0x42 in bytecode.
             assert_eq!(trace.ends[0].2.is_success(), child == MonadHardfork::MonadEight);
@@ -491,7 +380,7 @@ fn grandchildren_inherit_or_override_and_unwind_each_parent_separately() {
         for child in MonadHardfork::ALL {
             for grandchild in [None, Some(MonadHardfork::MonadEight), Some(MonadHardfork::MonadTen)]
             {
-                let (_, trace) = compare_tree(root, child, grandchild, &accounts);
+                let (_, trace) = execute_tree(root, child, grandchild, &accounts);
                 assert_eq!(
                     trace.ends.iter().map(|(depth, spec, _)| (*depth, *spec)).collect::<Vec<_>>(),
                     [(2, grandchild.unwrap_or(child)), (1, child), (0, root)]
@@ -522,7 +411,7 @@ fn creation_selects_child_rules_and_restores_the_parent() {
             for root in MonadHardfork::ALL {
                 for child in MonadHardfork::ALL {
                     let (_, trace) =
-                        compare(root, child, &[(ROOT, Bytes::copy_from_slice(&parent))]);
+                        execute(root, child, &[(ROOT, Bytes::copy_from_slice(&parent))]);
                     assert!(trace.steps.contains(&(1, child)));
                     assert_eq!(trace.steps.last(), Some(&(0, root)));
                 }
@@ -815,7 +704,7 @@ fn precompile_warmth_follows_frame_activation_in_both_directions() {
                 (MonadHardfork::MonadEight, MonadHardfork::MonadNine),
                 (MonadHardfork::MonadNine, MonadHardfork::MonadEight),
             ] {
-                let _ = compare(root, child, &accounts);
+                let _ = execute(root, child, &accounts);
             }
         }
     }
@@ -837,7 +726,7 @@ fn frame_changes_preserve_beneficiary_and_access_list_warmth() {
             for access_list in
                 [vec![], vec![AccessListItem { address: target, storage_keys: vec![B256::ZERO] }]]
             {
-                let (result, _) = compare_with_warmth(
+                let (result, _) = execute_with_warmth(
                     MonadHardfork::MonadNine,
                     MonadHardfork::MonadEight,
                     None,

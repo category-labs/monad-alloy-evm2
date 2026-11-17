@@ -60,6 +60,11 @@ fn clz_activation_and_snapshot_fork_isolation() {
             result["structLogs"][1]["op"],
             if spec == "monad-eight" { "INVALID" } else { "CLZ" }
         );
+        assert_eq!(result["structLogs"][1]["gasCost"], if spec == "monad-eight" { 0 } else { 5 });
+        assert_eq!(result["gasUsed"], 1_000_000);
+        if spec == "monad-eight" {
+            assert_eq!(result["gasSpent"], 1_000_000);
+        }
         let snapshot = vm.snapshot().unwrap();
         for target in forks {
             let mut restored = engine(target);

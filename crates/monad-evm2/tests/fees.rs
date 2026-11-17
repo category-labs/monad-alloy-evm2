@@ -24,16 +24,6 @@ use monad_evm2::{
     MonadTxEnvelope, SYSTEM_ADDRESS, SystemSenderIsAuthority,
 };
 
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    DatabaseCommit, ExecuteEvm,
-    context::{BlockEnv, TxEnv},
-    database::InMemoryDB as ReferenceDB,
-    state::{AccountInfo as ReferenceAccount, Bytecode as ReferenceBytecode},
-};
-
 const SENDER: Address = Address::repeat_byte(0x11);
 const TARGET: Address = Address::repeat_byte(0x22);
 const BENEFICIARY: Address = Address::repeat_byte(0x33);
@@ -87,30 +77,11 @@ fn receipts_and_balances_across_success_revert_and_halt() {
     let initial = U256::from(10_000_000);
     let value = U256::from(13);
     for spec in FORKS {
-        #[cfg(feature = "compare-monad-revm")]
-        let reference_spec = common::reference_spec(spec);
         let mut db = funded_db(initial);
-        #[cfg(feature = "compare-monad-revm")]
-        let mut reference_db = ReferenceDB::default();
-        #[cfg(feature = "compare-monad-revm")]
-        reference_db.insert_account_info(SENDER, ReferenceAccount::default().with_balance(initial));
         for (address, code) in [(REVERTER, REVERT_CODE), (INVALID, &[op::INVALID][..])] {
             insert_code(&mut db, address, code);
-            #[cfg(feature = "compare-monad-revm")]
-            reference_db.insert_account_info(
-                address,
-                ReferenceAccount::default()
-                    .with_code(ReferenceBytecode::new_raw(Bytes::from_static(code))),
-            );
         }
         let mut evm = evm(spec, 3, db);
-        #[cfg(feature = "compare-monad-revm")]
-        let mut reference = monad_context_with_db(reference_db)
-            .with_cfg(
-                MonadCfgEnv::new_with_spec(reference_spec).with_chain_id(MONAD_MAINNET_CHAIN_ID),
-            )
-            .with_block(BlockEnv { basefee: 3, beneficiary: BENEFICIARY, ..Default::default() })
-            .build_monad();
         let mut receipt_gas = 0;
         for (nonce, (to, limit, stop, consumed, cumulative)) in [
             (TARGET, 100_000, InstrStop::Stop, 21_000, 100_000),
@@ -122,26 +93,9 @@ fn receipts_and_balances_across_success_revert_and_halt() {
         {
             let tx =
                 TxLegacy { nonce: nonce as u64, to: TxKind::Call(to), value, ..legacy(limit, 5) };
-            #[cfg(feature = "compare-monad-revm")]
-            let reference_tx = TxEnv::builder()
-                .caller(SENDER)
-                .kind(tx.to)
-                .value(value)
-                .chain_id(tx.chain_id)
-                .nonce(tx.nonce)
-                .gas_price(tx.gas_price)
-                .gas_limit(limit)
-                .build()
-                .unwrap();
-            #[cfg(feature = "compare-monad-revm")]
-            let expected = reference.transact(reference_tx).unwrap();
             let result = evm.transact(&recovered(MonadTxEnvelope::Legacy(tx))).unwrap().commit();
             assert_eq!(result.stop, stop, "{spec}");
-            #[cfg(feature = "compare-monad-revm")]
-            assert_eq!(result.is_success(), expected.result.is_success());
             assert_eq!(result.total_gas_spent, consumed);
-            #[cfg(feature = "compare-monad-revm")]
-            assert_eq!(result.total_gas_spent, expected.result.gas().total_gas_spent());
             // The C++ receipt charges the gas limit, including on an early return or revert.
             assert_eq!(result.floor_gas, 21_000);
             assert_eq!(result.tx_gas_used(), consumed);
@@ -160,12 +114,6 @@ fn receipts_and_balances_across_success_revert_and_halt() {
             assert_eq!(sender.balance, initial - U256::from(5 * cumulative) - value);
             assert_eq!(reward, U256::from(2 * cumulative));
             assert_eq!(account(&mut evm, to).balance, if nonce == 0 { value } else { U256::ZERO });
-            #[cfg(feature = "compare-monad-revm")]
-            {
-                assert_eq!(sender.balance, expected.state[&SENDER].info.balance);
-                assert_eq!(reward, expected.state[&BENEFICIARY].info.balance);
-                reference.0.ctx.journaled_state.database.commit(expected.state);
-            }
         }
     }
 }

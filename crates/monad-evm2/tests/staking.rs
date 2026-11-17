@@ -1,7 +1,4 @@
-//! Staking lifecycle, gas and rollback checks, with optional reference comparisons.
-
-#[cfg(feature = "compare-monad-revm")]
-mod common;
+//! Staking lifecycle, gas and rollback checks.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, Log, U256};
@@ -32,15 +29,6 @@ use monad_evm2::{
     syscall_snapshot_calldata,
 };
 use std::collections::BTreeMap;
-
-#[cfg(feature = "compare-monad-revm")]
-use monad_revm::{MonadBuilder, MonadCfgEnv, monad_context_with_db};
-#[cfg(feature = "compare-monad-revm")]
-use revm::{
-    DatabaseCommit, ExecuteEvm, context::TxEnv, context_interface::result::ExecutionResult,
-    database::InMemoryDB as ReferenceDB, handler::SystemCallEvm,
-    state::AccountInfo as ReferenceAccount,
-};
 
 const SENDER: Address = Address::repeat_byte(0x11);
 const VALIDATOR: u64 = 7;
@@ -233,7 +221,7 @@ fn registration(stake: U256, commission: U256) -> Vec<u8> {
 }
 
 #[test]
-fn validator_registration_matches_release_compatibility_rules() {
+fn validator_registration_uses_simplified_key_identifiers() {
     let stake = MIN_AUTH_ADDRESS_STAKE;
     for spec in MonadHardfork::ALL {
         let add = payable(registration(stake, MON / U256::from(10)), stake);
@@ -724,7 +712,7 @@ fn prestate() -> Vec<(U256, U256)> {
     ]
 }
 
-/// Execute staking operations, checking rollback and optional reference observations.
+/// Execute staking operations and check state changes, gas and rollback.
 fn assert_calls(
     spec: MonadHardfork,
     slots: &[(U256, U256)],
@@ -740,28 +728,15 @@ fn assert_calls_as(
     caller: Address,
     system: bool,
 ) -> Vec<TxResult<MonadEvmTypes>> {
-    #[cfg(feature = "compare-monad-revm")]
-    let reference_spec = common::reference_spec(spec);
     let mut db = InMemoryDB::default();
-    #[cfg(feature = "compare-monad-revm")]
-    let mut reference_db = ReferenceDB::default();
     for address in [SENDER, STAKING_ADDRESS, SYSTEM_ADDRESS] {
         let balance = MON * U256::from(1_000_000_000u64);
         db.insert_account_info(&address, AccountInfo::default().with_balance(balance));
-        #[cfg(feature = "compare-monad-revm")]
-        reference_db
-            .insert_account_info(address, ReferenceAccount::default().with_balance(balance));
     }
     for (key, value) in slots {
         db.insert_account_storage(&STAKING_ADDRESS, key, value);
-        #[cfg(feature = "compare-monad-revm")]
-        reference_db.insert_account_storage(STAKING_ADDRESS, *key, *value).unwrap();
     }
     let mut evm = MonadEvmBuilder::new(1).create_evm(spec, MonadBlockEnv::default(), db);
-    #[cfg(feature = "compare-monad-revm")]
-    let mut reference = monad_context_with_db(reference_db)
-        .with_cfg(MonadCfgEnv::new_with_spec(reference_spec).with_chain_id(1))
-        .build_monad();
     let mut results = Vec::new();
     for (nonce, call) in calls.iter().enumerate() {
         let tx = TxLegacy {
@@ -772,27 +747,6 @@ fn assert_calls_as(
             value: call.value,
             gas_limit: call.gas_limit,
             ..Default::default()
-        };
-        #[cfg(feature = "compare-monad-revm")]
-        let expected = if system {
-            assert_eq!(call.value, U256::ZERO);
-            reference.system_call_with_caller(caller, STAKING_ADDRESS, call.input.clone()).unwrap()
-        } else {
-            reference
-                .transact(
-                    TxEnv::builder()
-                        .caller(caller)
-                        .kind(tx.to)
-                        .value(tx.value)
-                        .data(tx.input.clone())
-                        .gas_limit(tx.gas_limit)
-                        .gas_price(0)
-                        .nonce(tx.nonce)
-                        .chain_id(Some(1))
-                        .build()
-                        .unwrap(),
-                )
-                .unwrap()
         };
         if system {
             assert_eq!(call.value, U256::ZERO);
@@ -818,18 +772,6 @@ fn assert_calls_as(
                     .map(move |(key, slot)| ((account.address, *key), slot.value.current))
             })
             .collect::<BTreeMap<_, _>>();
-        #[cfg(feature = "compare-monad-revm")]
-        let expected_slots = expected
-            .state
-            .iter()
-            .flat_map(|(address, account)| {
-                account
-                    .storage
-                    .iter()
-                    .filter(|(_, slot)| slot.is_changed())
-                    .map(move |(key, slot)| ((*address, *key), slot.present_value))
-            })
-            .collect::<BTreeMap<_, _>>();
         let result = pending.commit();
         if !result.is_success() {
             assert!(actual_slots.is_empty(), "{spec} call {nonce}: storage rollback");
@@ -848,41 +790,6 @@ fn assert_calls_as(
         if !system {
             assert_eq!(result.ext.charged_gas, call.gas_limit);
             assert_eq!(result.refunded, 0);
-        }
-        #[cfg(feature = "compare-monad-revm")]
-        {
-            assert_eq!(actual_slots, expected_slots, "{spec} call {nonce}");
-            assert_eq!(result.is_success(), expected.result.is_success(), "{spec} call {nonce}");
-            assert_eq!(
-                result.stop == InstrStop::Revert,
-                matches!(expected.result, ExecutionResult::Revert { .. }),
-                "{spec} call {nonce}"
-            );
-            assert_eq!(
-                result.output.as_ref(),
-                expected.result.output().map_or(&[][..], |b| b.as_ref()),
-                "{spec} call {nonce}"
-            );
-            if !system {
-                assert_eq!(
-                    result.total_gas_spent,
-                    expected.result.gas().total_gas_spent(),
-                    "{spec} call {nonce}"
-                );
-            }
-            if call.expected_logs.is_none() {
-                assert_eq!(result.logs.as_slice(), expected.result.logs(), "{spec} call {nonce}");
-            }
-            for (address, account) in &expected.state {
-                let actual =
-                    evm.state_mut().account_info_untracked(address).unwrap().unwrap_or_default();
-                assert_eq!(
-                    (actual.balance, actual.nonce),
-                    (account.info.balance, account.info.nonce),
-                    "{spec} call {nonce}: {address}"
-                );
-            }
-            reference.0.ctx.journaled_state.database.commit(expected.state);
         }
         results.push(result);
     }
