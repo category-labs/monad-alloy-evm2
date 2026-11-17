@@ -1,6 +1,6 @@
 [package]
 name = "monad-evm2-fixtures"
-description = "Monad blockchain fixture replay and execution parity checks"
+description = "Monad blockchain fixture replay and protocol checks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,16 +23,9 @@ serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 walkdir.workspace = true
 
-# compare-monad-revm
-monad-revm = { workspace = true, optional = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst", "memory_limit"] }
-revm = { workspace = true, optional = true, features = ["std"] }
-
 [dev-dependencies]
 alloy-eips.workspace = true
 tempfile.workspace = true
-
-[features]
-compare-monad-revm = ["dep:monad-revm", "dep:revm"]
 
 [lints]
 workspace = true

@@ -40,26 +40,15 @@ fn run(args: Args) -> Result<u8> {
                 monad_evm2_fixtures::Status::Failed => "FAIL",
                 monad_evm2_fixtures::Status::Unsupported => "UNSUPPORTED",
             };
-            write!(output, "{status} {} :: {} — {}", case.file.display(), case.name, case.message,)?;
-            if cfg!(feature = "compare-monad-revm") {
-                write!(
-                    output,
-                    "; {} parity checks, {} differences",
-                    case.parity.checks,
-                    case.parity.differences.len()
-                )?;
-            }
-            writeln!(output)?;
+            writeln!(
+                output,
+                "{status} {} :: {} — {}",
+                case.file.display(),
+                case.name,
+                case.message
+            )?;
             if let Some(divergence) = case.known_spec_model_divergence {
                 writeln!(output, "  KNOWN SPEC-MODEL DIVERGENCE: {}", divergence.description())?;
-            }
-            for difference in &case.parity.differences {
-                writeln!(
-                    output,
-                    "  DIFFERENCE {}: {}",
-                    difference.at,
-                    serde_json::to_string(difference)?
-                )?;
             }
         }
         writeln!(
@@ -75,15 +64,6 @@ fn run(args: Args) -> Result<u8> {
                 output,
                 "Known spec-model divergences: {} (included in failed cases)",
                 report.summary.known_spec_model_divergences
-            )?;
-        }
-        if cfg!(feature = "compare-monad-revm") {
-            writeln!(
-                output,
-                "{} parity checks, {} differences; {} reference receipts corrected to full-limit charging",
-                report.summary.parity_checks,
-                report.summary.parity_differences,
-                report.summary.corrected_reference_receipts
             )?;
         }
     }

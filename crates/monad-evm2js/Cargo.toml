@@ -22,6 +22,5 @@ serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "=0.2.128"
 
-
 [lints]
 workspace = true

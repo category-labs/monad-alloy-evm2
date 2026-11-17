@@ -1,9 +1,8 @@
-//! Valid-block execution commitments and optional reference observations.
+//! Valid-block execution commitments and protocol assertions.
 
 use crate::{
     engine::{self, BlockContext, Request},
     fixture::Fixture,
-    parity::ParityReport,
     state,
 };
 use alloy_consensus::{
@@ -25,7 +24,7 @@ pub(crate) struct Stats {
     pub(crate) transactions: usize,
 }
 
-pub(crate) fn execute(fixture: &Fixture, _parity: &mut ParityReport) -> Result<Stats> {
+pub(crate) fn execute(fixture: &Fixture) -> Result<Stats> {
     let mut db = engine::database(&fixture.pre)?;
     ensure!(
         state::root(&fixture.pre) == fixture.genesis.state_root,
@@ -114,16 +113,7 @@ pub(crate) fn execute(fixture: &Fixture, _parity: &mut ParityReport) -> Result<S
                 let at = format!("block {index}, system call {target}");
                 let request =
                     Request::System { target, data: Bytes::copy_from_slice(data.as_slice()) };
-                #[cfg(feature = "compare-monad-revm")]
-                let reference_db = crate::reference::database(&db)?;
-                let _actual =
-                    engine::actual(&mut db, &context, &request).wrap_err_with(|| at.clone())?;
-                #[cfg(feature = "compare-monad-revm")]
-                _parity.record(
-                    at,
-                    _actual,
-                    crate::reference::execute(reference_db, &context, &request),
-                );
+                let _ = engine::execute(&mut db, &context, &request).wrap_err(at)?;
             }
         }
         let mut cumulative_gas_used = 0u64;
@@ -142,12 +132,10 @@ pub(crate) fn execute(fixture: &Fixture, _parity: &mut ParityReport) -> Result<S
             context.chain.current_tx_index = tx_index;
             let at = format!("block {index}, transaction {tx_index}");
             let request = Request::Transaction { tx, sender };
-            #[cfg(feature = "compare-monad-revm")]
-            let reference_db = crate::reference::database(&db)?;
-            let actual = engine::actual(&mut db, &context, &request)
+            let result = engine::execute(&mut db, &context, &request)
                 .wrap_err_with(|| format!("{at}: unexpected transaction rejection"))?;
             ensure!(
-                actual.receipt_gas == Some(tx.gas_limit()),
+                result.ext.charged_gas == tx.gas_limit(),
                 "{at}: receipt must charge the full gas limit"
             );
             cumulative_gas_used = cumulative_gas_used
@@ -157,17 +145,16 @@ pub(crate) fn execute(fixture: &Fixture, _parity: &mut ParityReport) -> Result<S
                 cumulative_gas_used <= header.gas_limit,
                 "block {index}: transactions exceed block gas limit"
             );
-            outcomes.push(format!("{tx_index}: {}", actual.status));
+            let status = engine::status(&result);
+            outcomes.push(format!("{tx_index}: {status}"));
             let receipt = Receipt {
-                status: (actual.status == "success").into(),
+                status: (status == "success").into(),
                 cumulative_gas_used,
-                logs: actual.logs.clone(),
+                logs: result.logs,
             }
             .with_bloom();
             bloom |= receipt.logs_bloom;
             receipts.push(ReceiptEnvelope::from_typed(tx.tx_type(), receipt));
-            #[cfg(feature = "compare-monad-revm")]
-            _parity.record(at, actual, crate::reference::execute(reference_db, &context, &request));
             stats.transactions += 1;
         }
         grandparent_participants = context.chain.parent_senders_and_authorities;

@@ -29,24 +29,16 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Check independent test dependencies
-        run: |
-          cargo tree --locked --workspace --edges normal,build,dev --prefix none \
-            --features monad-evm2/serde,monad-evm2/memory_limit > "${RUNNER_TEMP}/dependencies.txt"
-          if grep -E '^(monad-revm|revm) v' "${RUNNER_TEMP}/dependencies.txt"; then
-            echo "::error::Default protocol tests must not depend on a reference engine"
-            exit 1
-          fi
       - name: Lint runtime and test features
-        run: cargo clippy --locked --workspace --all-targets --features monad-evm2/serde,monad-evm2/memory_limit -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Test default features
         run: cargo test --locked -p monad-evm2
       - name: Test optional features
-        run: cargo test --locked -p monad-evm2 -p monad-evm2js --features monad-evm2/serde,monad-evm2/memory_limit
+        run: cargo test --locked -p monad-evm2 -p monad-evm2js --all-features
       - name: Test without default features
         run: cargo test --locked -p monad-evm2 --no-default-features --features std,serde
       - name: Check documentation
-        run: cargo doc --locked --workspace --no-deps --features monad-evm2/serde,monad-evm2/memory_limit
+        run: cargo doc --locked --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
