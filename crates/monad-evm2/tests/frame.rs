@@ -645,7 +645,12 @@ fn relocated_crypto_precompiles_retain_fork_pricing_and_atomicity() {
             .transact_with_inspector(&tx(), &mut Selector::new(root, child))
             .unwrap()
             .discard();
-        assert_eq!(result.total_gas_spent, baseline.total_gas_spent);
+        // A move keeps the fork's warm precompile addresses, so the relocated address is cold.
+        assert_eq!(
+            result.total_gas_spent,
+            baseline.total_gas_spent + monad_evm2::cfg::COLD_ACCOUNT_ACCESS_COST
+                - monad_evm2::cfg::WARM_STORAGE_READ_COST
+        );
         assert!(actual.precompiles().contains(&native));
         assert!(!actual.precompiles().contains(&CHILD));
         assert!(actual.precompiles().contains(&relocated));

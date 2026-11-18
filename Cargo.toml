@@ -19,8 +19,8 @@ alloy-primitives = { version = "1.7", default-features = false, features = ["map
 alloy-rlp = "0.3"
 alloy-sol-types = { version = "1.7", default-features = false }
 alloy-trie = { version = "0.9", features = ["ethereum"] }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "0b5a72e1cd9f679aefef913789e548f8082a31b8", default-features = false }
-evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "0b5a72e1cd9f679aefef913789e548f8082a31b8" }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "e25a95fb27de49d06ae9a23c4c9ee578a81504fc", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "e25a95fb27de49d06ae9a23c4c9ee578a81504fc" }
 clap = { version = "4", features = ["derive"] }
 eyre = "0.6"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

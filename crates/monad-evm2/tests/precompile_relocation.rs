@@ -68,8 +68,9 @@ fn crypto_moves_retain_execution_identity_and_warmth() {
         assert_eq!(provider.as_map().get(&DESTINATION).unwrap().id(), &identity_id);
         let mut warm = PrewarmSet::new();
         provider.warm_addresses(&mut warm);
-        assert!(warm.is_warm(&DESTINATION));
-        assert!(!warm.is_warm(&IDENTITY));
+        // A move keeps the fork's warm precompile addresses.
+        assert!(!warm.is_warm(&DESTINATION));
+        assert!(warm.is_warm(&IDENTITY));
         let mut evm = MonadEvmBuilder::new(1).create_evm(
             spec,
             MonadBlockEnv::default(),
