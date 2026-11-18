@@ -116,9 +116,8 @@ cargo doc --locked -p monad-evm2 --no-deps --features serde --open
 
 Tests check protocol behavior, execution gas, receipt charges, and rollback against
 explicit expectations. CI runs these checks, fixture replay, and native/WASM
-comparisons on pushes and pull requests. CI also checks that runtime and macro
-revisions match Foundry master's effective evm2 pins. Dependency updates must retain
-that alignment and pass Foundry's Monad integration tests.
+comparisons on pushes and pull requests. Dependency updates should be checked
+against Foundry's Monad integration tests.
 
 Check without the standard library:
 
