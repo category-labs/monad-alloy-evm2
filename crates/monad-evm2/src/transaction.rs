@@ -285,7 +285,6 @@ fn execute_inner(
             gas_limit,
             floor_gas: floor,
             initial_state_gas: 0,
-            state_refund: 0,
             result,
         },
     )?;
